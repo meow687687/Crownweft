@@ -5,15 +5,18 @@ signal build_selected(building_id: StringName)
 signal speed_changed(speed_multiplier: float)
 signal toggle_overlay_requested()
 signal worker_assignment_changed(delta: int)
+signal recruit_unit_requested(unit_def_id: StringName)
 
 var label_resources: Label = null
 var label_population: Label = null
 var label_speed: Label = null
+var label_raid_warning: Label = null
 var panel_inspector: PanelContainer = null
 var label_inspector_title: Label = null
 var label_inspector_status: Label = null
 var label_inspector_inv: Label = null
 var label_inspector_workers: Label = null
+var box_recruitment: VBoxContainer = null
 
 func _ready() -> void:
 	_setup_ui()
@@ -65,6 +68,16 @@ func _setup_ui() -> void:
 	btn_overlay.text = "🔍 Overlay"
 	btn_overlay.pressed.connect(func(): toggle_overlay_requested.emit())
 	top_box.add_child(btn_overlay)
+	
+	# Raid Warning Banner
+	label_raid_warning = Label.new()
+	label_raid_warning.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	label_raid_warning.offset_top = 45
+	label_raid_warning.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label_raid_warning.text = "⚠ RAID WARNING: RAIDERS DETECTED!"
+	label_raid_warning.add_theme_color_override("font_color", Color.RED)
+	label_raid_warning.visible = false
+	add_child(label_raid_warning)
 	
 	# Bottom Build Bar
 	var bottom_panel: Panel = Panel.new()
@@ -137,6 +150,21 @@ func _setup_ui() -> void:
 	label_inspector_inv = Label.new()
 	label_inspector_inv.text = "Inventory:\n - None"
 	insp_box.add_child(label_inspector_inv)
+	
+	# Barracks Recruitment Box
+	box_recruitment = VBoxContainer.new()
+	box_recruitment.visible = false
+	insp_box.add_child(box_recruitment)
+	
+	var btn_spearman: Button = Button.new()
+	btn_spearman.text = "Recruit Spearman (15 Coin)"
+	btn_spearman.pressed.connect(func(): recruit_unit_requested.emit(&"spearman"))
+	box_recruitment.add_child(btn_spearman)
+	
+	var btn_archer: Button = Button.new()
+	btn_archer.text = "Recruit Archer (20 Coin)"
+	btn_archer.pressed.connect(func(): recruit_unit_requested.emit(&"archer"))
+	box_recruitment.add_child(btn_archer)
 
 func update_resources(coin: int, bread: int, grain: int, timber: int, stone: int) -> void:
 	if label_resources != null:
@@ -169,3 +197,15 @@ func show_building_details(building: BuildingState, def_info: Dictionary) -> voi
 		for res_id in building.inventory.quantities:
 			inv_text += " - %s: %d\n" % [str(res_id), building.inventory.quantities[res_id]]
 	label_inspector_inv.text = inv_text
+	
+	if box_recruitment != null:
+		box_recruitment.visible = (building.definition_id == &"barracks")
+
+func show_raid_warning(seconds_left: float) -> void:
+	if label_raid_warning != null:
+		label_raid_warning.visible = true
+		label_raid_warning.text = "⚠ RAID WARNING: RAIDERS ARRIVING IN %d SECONDS!" % int(ceilf(seconds_left))
+
+func hide_raid_warning() -> void:
+	if label_raid_warning != null:
+		label_raid_warning.visible = false

@@ -6,6 +6,8 @@ const TILE_SIZE: float = 16.0
 var world_state: WorldState = null
 var buildings: Array[BuildingState] = []
 var citizens: Array[CitizenState] = []
+var military_units: Array[MilitaryUnitState] = []
+var selected_units: Array[MilitaryUnitState] = []
 var active_jobs: Array[HaulJob] = []
 var show_logistics_overlay: bool = false
 var selected_building: BuildingState = null
@@ -23,9 +25,43 @@ func _draw() -> void:
 	# Draw citizens
 	_draw_citizens()
 	
+	# Draw military units
+	_draw_military_units()
+	
 	# Draw logistics overlay
 	if show_logistics_overlay:
 		_draw_logistics_overlay()
+
+func _draw_military_units() -> void:
+	var defs: Dictionary = UnitDef.get_all_defs()
+	for u in military_units:
+		if u.is_dead:
+			continue
+			
+		var def: UnitDef = defs.get(u.unit_definition_id, null)
+		var col: Color = def.unit_color if def != null else Color.WHITE
+		
+		# Draw unit circle
+		draw_circle(u.position, 6.0, col)
+		draw_circle(u.position, 6.0, Color.BLACK, false, 1.2)
+		
+		# Starving indicator (cross)
+		if u.is_starving:
+			draw_circle(u.position, 3.0, Color.ORANGE_RED)
+			
+		# Selection ring
+		if u in selected_units:
+			draw_circle(u.position, 9.0, Color(1.0, 0.9, 0.2), false, 1.8)
+			
+		# Health bar (if damaged)
+		if u.health < u.max_health:
+			var bar_w: float = 14.0
+			var bar_h: float = 3.0
+			var bar_pos: Vector2 = u.position + Vector2(-bar_w * 0.5, -12.0)
+			var health_ratio: float = clampf(float(u.health) / float(u.max_health), 0.0, 1.0)
+			
+			draw_rect(Rect2(bar_pos, Vector2(bar_w, bar_h)), Color(0.2, 0.2, 0.2))
+			draw_rect(Rect2(bar_pos, Vector2(bar_w * health_ratio, bar_h)), Color(0.2, 0.9, 0.2))
 
 func _draw_terrain() -> void:
 	var grass_color: Color = Color(0.35, 0.65, 0.3)

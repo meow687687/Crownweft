@@ -11,9 +11,12 @@ var job_board: JobBoard = null
 var logistics: LogisticsSystem = null
 var production: ProductionSystem = null
 var needs: NeedsSystem = null
+var combat: CombatSystem = null
 
 var buildings: Array[BuildingState] = []
 var citizens: Array[CitizenState] = []
+var military_units: Array[MilitaryUnitState] = []
+var selected_units: Array[MilitaryUnitState] = []
 var next_entity_id: int = 1
 
 # Simulation timing
@@ -41,6 +44,14 @@ func _init_simulation() -> void:
 	logistics = LogisticsSystem.new(job_board)
 	production = ProductionSystem.new()
 	needs = NeedsSystem.new()
+	combat = CombatSystem.new()
+	
+	combat.raid_announced.connect(func(seconds_left: float):
+		ui.show_raid_warning(seconds_left)
+	)
+	combat.raid_started.connect(func():
+		ui.show_raid_warning(0.0)
+	)
 	
 	# Spawn Town Hall at settlement origin
 	var th_pos: Vector2i = world_state.start_settlement_pos
@@ -71,6 +82,8 @@ func _init_simulation() -> void:
 	renderer.world_state = world_state
 	renderer.buildings = buildings
 	renderer.citizens = citizens
+	renderer.military_units = military_units
+	renderer.selected_units = selected_units
 	renderer.active_jobs = []
 	renderer.queue_redraw()
 
@@ -92,10 +105,15 @@ func _setup_signals() -> void:
 			selected_building.assigned_workers = clampi(selected_building.assigned_workers + delta, 0, max_slots)
 			ui.show_building_details(selected_building, defs.get(selected_building.definition_id, {}))
 	)
+	ui.recruit_unit_requested.connect(_on_recruit_unit_requested)
 
 func _process(delta: float) -> void:
 	if sim_speed_multiplier > 0.0:
-		sim_tick_timer += delta * sim_speed_multiplier
+		var sim_delta: float = delta * sim_speed_multiplier
+		combat.tick_combat(military_units, sim_delta)
+		combat.tick_raid_timer(sim_delta, world_state.raider_camp_pos, military_units)
+		
+		sim_tick_timer += sim_delta
 		var tick_interval: float = BASE_TICK_RATE
 		while sim_tick_timer >= tick_interval:
 			sim_tick_timer -= tick_interval
@@ -114,13 +132,71 @@ func _unhandled_input(event: InputEvent) -> void:
 				else:
 					place_building(active_build_id, tile_coord)
 			else:
-				_select_building_at(tile_coord)
+				var clicked_unit: MilitaryUnitState = _find_unit_at(mouse_world)
+				if clicked_unit != null and clicked_unit.faction_id == 0:
+					selected_units = [clicked_unit]
+					renderer.selected_units = selected_units
+					selected_building = null
+					renderer.selected_building = null
+					ui.show_building_details(null, {})
+					renderer.queue_redraw()
+				else:
+					selected_units.clear()
+					renderer.selected_units = selected_units
+					_select_building_at(tile_coord)
 		elif mb.button_index == MOUSE_BUTTON_RIGHT:
-			active_build_id = &""
-			selected_building = null
-			renderer.selected_building = null
-			ui.show_building_details(null, {})
-			renderer.queue_redraw()
+			if not selected_units.is_empty():
+				var target_enemy: MilitaryUnitState = _find_unit_at(mouse_world)
+				for u in selected_units:
+					if target_enemy != null and target_enemy.faction_id != 0:
+						u.set_attack_target_order(target_enemy.id)
+					else:
+						u.set_move_order(mouse_world)
+				renderer.queue_redraw()
+			else:
+				active_build_id = &""
+				selected_building = null
+				renderer.selected_building = null
+				ui.show_building_details(null, {})
+				renderer.queue_redraw()
+
+func _find_unit_at(pos: Vector2) -> MilitaryUnitState:
+	for u in military_units:
+		if not u.is_dead and u.position.distance_to(pos) <= 12.0:
+			return u
+	return null
+
+func _on_recruit_unit_requested(unit_def_id: StringName) -> void:
+	var defs: Dictionary = UnitDef.get_all_defs()
+	var unit_def: UnitDef = defs.get(unit_def_id, null)
+	if unit_def == null:
+		return
+		
+	# Find barracks
+	var barracks_b: BuildingState = null
+	for b in buildings:
+		if b.definition_id == &"barracks":
+			barracks_b = b
+			break
+	if barracks_b == null:
+		return
+		
+	# Deduct recruitment cost (Coin) from town hall / main store
+	var main_inv: Inventory = buildings[0].inventory if not buildings.is_empty() else null
+	if main_inv == null:
+		return
+		
+	var coin_cost: int = unit_def.recruitment_cost.get(&"coin", 0)
+	if main_inv.get_available_outgoing(&"coin") < coin_cost:
+		return # Cannot afford
+		
+	main_inv.remove_resource(&"coin", coin_cost, "RECRUITMENT", false)
+	
+	# Spawn unit just outside barracks
+	var spawn_pos: Vector2 = Vector2((barracks_b.tile_origin.x + 3) * 16.0, (barracks_b.tile_origin.y + 1) * 16.0)
+	var new_unit: MilitaryUnitState = combat.spawn_player_unit(unit_def_id, spawn_pos)
+	military_units.append(new_unit)
+	renderer.queue_redraw()
 
 func _select_building_at(tile_coord: Vector2i) -> void:
 	selected_building = null
@@ -229,6 +305,10 @@ func _simulation_tick() -> void:
 			food_inventories.append(b.inventory)
 			
 	var needs_report: Dictionary = needs.tick_citizens(citizens, food_inventories, current_tick)
+	
+	# Military upkeep (soldiers consume bread every 24 ticks)
+	if current_tick % 24 == 0:
+		combat.apply_military_upkeep(military_units, food_inventories)
 	
 	# 3. Logistics demand creation
 	_generate_logistics_demand()

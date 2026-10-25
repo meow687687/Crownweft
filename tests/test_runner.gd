@@ -7,7 +7,9 @@ const SUITES: Array[String] = [
 	"res://tests/unit/test_world_gen.gd",
 	"res://tests/unit/test_pathfinding.gd",
 	"res://tests/unit/test_needs.gd",
-	"res://tests/integration/test_simulation_proof.gd"
+	"res://tests/unit/test_combat.gd",
+	"res://tests/integration/test_simulation_proof.gd",
+	"res://tests/integration/test_military_slice.gd"
 ]
 
 func _init() -> void:
