@@ -1,0 +1,36 @@
+extends SceneTree
+
+const SUITES: Array[String] = [
+	"res://tests/unit/test_inventory.gd",
+	"res://tests/unit/test_job_board.gd",
+	"res://tests/unit/test_production.gd",
+	"res://tests/integration/test_simulation_proof.gd"
+]
+
+func _init() -> void:
+	print("\n==============================================")
+	print("           CROWNWEFT TEST SUITE RUNNER       ")
+	print("==============================================")
+	
+	var all_passed: bool = true
+	var godot_bin: String = OS.get_executable_path()
+	
+	for suite_path: String in SUITES:
+		print("\n>> Executing: %s" % suite_path)
+		var output: Array = []
+		var exit_code: int = OS.execute(godot_bin, ["--headless", "-s", suite_path], output, true)
+		for line in output:
+			print(line)
+		if exit_code != 0:
+			printerr("!! Suite FAILED with exit code: %d" % exit_code)
+			all_passed = false
+			break
+			
+	if all_passed:
+		print("\n==============================================")
+		print("  ALL SUITES PASSED — EXIT GATES SATISFIED!   ")
+		print("==============================================\n")
+		quit(0)
+	else:
+		printerr("\nTEST RUNNER FAILED.")
+		quit(1)

@@ -1,0 +1,7 @@
+# Godot 4 
+.godot/
+*.translation
+
+# OS / Editor
+.DS_Store
+Thumbs.db
