@@ -10,6 +10,11 @@ var _is_panning: bool = false
 var _pan_start_mouse: Vector2 = Vector2.ZERO
 var _pan_start_cam: Vector2 = Vector2.ZERO
 
+func _ready() -> void:
+	zoom = Vector2(2.0, 2.0)
+	min_zoom = 0.6
+	max_zoom = 4.0
+
 func _process(delta: float) -> void:
 	var move_vec: Vector2 = Vector2.ZERO
 	if Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP):

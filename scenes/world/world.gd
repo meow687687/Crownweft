@@ -97,6 +97,8 @@ func _setup_signals() -> void:
 	)
 	ui.build_selected.connect(func(b_id: StringName):
 		active_build_id = b_id
+		renderer.active_build_id = b_id
+		renderer.queue_redraw()
 	)
 	ui.toggle_overlay_requested.connect(func():
 		renderer.show_logistics_overlay = not renderer.show_logistics_overlay
@@ -115,6 +117,21 @@ func _setup_signals() -> void:
 	ui.load_game_requested.connect(_on_load_game)
 
 func _process(delta: float) -> void:
+	# Update Placement Preview Ghost
+	if active_build_id != &"":
+		var mouse_world: Vector2 = get_global_mouse_position()
+		var tile_coord: Vector2i = Vector2i(int(mouse_world.x / 16.0), int(mouse_world.y / 16.0))
+		renderer.hover_tile = tile_coord
+		renderer.active_build_id = active_build_id
+		var check: Dictionary = can_place_building_at(active_build_id, tile_coord)
+		renderer.is_hover_valid = check.get("ok", false)
+		renderer.queue_redraw()
+	else:
+		if renderer.hover_tile != Vector2i(-1, -1):
+			renderer.hover_tile = Vector2i(-1, -1)
+			renderer.active_build_id = &""
+			renderer.queue_redraw()
+
 	if sim_speed_multiplier > 0.0:
 		var sim_delta: float = delta * sim_speed_multiplier
 		combat.tick_combat(military_units, sim_delta)
@@ -129,6 +146,15 @@ func _process(delta: float) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed:
 		var mb: InputEventMouseButton = event as InputEventMouseButton
+		
+		# Protection: Ignore clicks if mouse is over top HUD or bottom palette
+		var mouse_screen: Vector2 = get_viewport().get_mouse_position()
+		var screen_size: Vector2 = get_viewport().get_visible_rect().size
+		if mouse_screen.y < 50.0 or mouse_screen.y > (screen_size.y - 65.0):
+			return
+		if ui.panel_inspector != null and ui.panel_inspector.visible and mouse_screen.x > (screen_size.x - 290.0):
+			return
+			
 		var mouse_world: Vector2 = get_global_mouse_position()
 		var tile_coord: Vector2i = Vector2i(int(mouse_world.x / 16.0), int(mouse_world.y / 16.0))
 		
@@ -137,7 +163,13 @@ func _unhandled_input(event: InputEvent) -> void:
 				if active_build_id == &"road":
 					build_road(tile_coord)
 				else:
-					place_building(active_build_id, tile_coord)
+					var res = place_building(active_build_id, tile_coord)
+					if res == null:
+						var check = can_place_building_at(active_build_id, tile_coord)
+						ui.show_toast(check.get("reason", "Cannot place here!"), true)
+					else:
+						var defs = BuildingCatalog.get_all_defs()
+						ui.show_toast("Constructed %s" % defs.get(active_build_id, {}).get("display_name", "Building"), false)
 			else:
 				var clicked_unit: MilitaryUnitState = _find_unit_at(mouse_world)
 				if clicked_unit != null and clicked_unit.faction_id == 0:
@@ -151,7 +183,17 @@ func _unhandled_input(event: InputEvent) -> void:
 					selected_units.clear()
 					renderer.selected_units = selected_units
 					_select_building_at(tile_coord)
+					
 		elif mb.button_index == MOUSE_BUTTON_RIGHT:
+			if active_build_id != &"":
+				active_build_id = &""
+				ui.set_active_build_mode(&"")
+				renderer.active_build_id = &""
+				renderer.hover_tile = Vector2i(-1, -1)
+				renderer.queue_redraw()
+				ui.show_toast("Build mode cancelled", false)
+				return
+				
 			if not selected_units.is_empty():
 				var target_enemy: MilitaryUnitState = _find_unit_at(mouse_world)
 				for u in selected_units:
@@ -161,7 +203,6 @@ func _unhandled_input(event: InputEvent) -> void:
 						u.set_move_order(mouse_world)
 				renderer.queue_redraw()
 			else:
-				active_build_id = &""
 				selected_building = null
 				renderer.selected_building = null
 				ui.show_building_details(null, {})
@@ -172,38 +213,6 @@ func _find_unit_at(pos: Vector2) -> MilitaryUnitState:
 		if not u.is_dead and u.position.distance_to(pos) <= 12.0:
 			return u
 	return null
-
-func _on_recruit_unit_requested(unit_def_id: StringName) -> void:
-	var defs: Dictionary = UnitDef.get_all_defs()
-	var unit_def: UnitDef = defs.get(unit_def_id, null)
-	if unit_def == null:
-		return
-		
-	# Find barracks
-	var barracks_b: BuildingState = null
-	for b in buildings:
-		if b.definition_id == &"barracks":
-			barracks_b = b
-			break
-	if barracks_b == null:
-		return
-		
-	# Deduct recruitment cost (Coin) from town hall / main store
-	var main_inv: Inventory = buildings[0].inventory if not buildings.is_empty() else null
-	if main_inv == null:
-		return
-		
-	var coin_cost: int = unit_def.recruitment_cost.get(&"coin", 0)
-	if main_inv.get_available_outgoing(&"coin") < coin_cost:
-		return # Cannot afford
-		
-	main_inv.remove_resource(&"coin", coin_cost, "RECRUITMENT", false)
-	
-	# Spawn unit just outside barracks
-	var spawn_pos: Vector2 = Vector2((barracks_b.tile_origin.x + 3) * 16.0, (barracks_b.tile_origin.y + 1) * 16.0)
-	var new_unit: MilitaryUnitState = combat.spawn_player_unit(unit_def_id, spawn_pos)
-	military_units.append(new_unit)
-	renderer.queue_redraw()
 
 func _select_building_at(tile_coord: Vector2i) -> void:
 	selected_building = null
@@ -222,34 +231,62 @@ func _select_building_at(tile_coord: Vector2i) -> void:
 		ui.show_building_details(null, {})
 	renderer.queue_redraw()
 
+func can_place_building_at(b_id: StringName, coord: Vector2i) -> Dictionary:
+	var defs: Dictionary = BuildingCatalog.get_all_defs()
+	var def_info: Dictionary = defs.get(b_id, {})
+	if def_info.is_empty():
+		return {"ok": false, "reason": "Unknown building"}
+		
+	var footprint: Vector2i = def_info.get("footprint", Vector2i(2, 2))
+	
+	# Bounds and terrain validation
+	for dy in range(footprint.y):
+		for dx in range(footprint.x):
+			var c: Vector2i = coord + Vector2i(dx, dy)
+			if not world_state.is_valid_coord(c):
+				return {"ok": false, "reason": "Location is outside map boundary"}
+			var tile: WorldTile = world_state.get_tile(c)
+			if tile == null:
+				return {"ok": false, "reason": "Invalid tile"}
+			if tile.terrain_id == &"water":
+				return {"ok": false, "reason": "Cannot build on water"}
+			if tile.terrain_id == &"rock":
+				return {"ok": false, "reason": "Cannot build on rocky terrain"}
+			if not tile.is_buildable:
+				return {"ok": false, "reason": "Tile is occupied or blocked"}
+				
+	# Cost check against Town Hall
+	var main_inv: Inventory = buildings[0].inventory if not buildings.is_empty() else null
+	if main_inv != null:
+		var cost: Dictionary = def_info.get("cost", {})
+		for res_id in cost:
+			var req: int = cost[res_id]
+			if main_inv.get_available_outgoing(res_id) < req:
+				return {"ok": false, "reason": "Insufficient %s! (Need %d, have %d)" % [str(res_id).capitalize(), req, main_inv.get_available_outgoing(res_id)]}
+				
+	return {"ok": true, "reason": "Ready to build"}
+
 func build_road(coord: Vector2i) -> void:
 	var tile: WorldTile = world_state.get_tile(coord)
 	if tile != null and tile.is_walkable:
 		tile.road_level = 1
 		pathfinding.set_road(coord, true)
 		renderer.queue_redraw()
+		ui.show_toast("Built road section", false)
 
 func place_building(b_id: StringName, coord: Vector2i, bypass_cost: bool = false) -> BuildingState:
-	var defs: Dictionary = BuildingCatalog.get_all_defs()
-	var def_info: Dictionary = defs.get(b_id, {})
-	if def_info.is_empty():
+	var check: Dictionary = can_place_building_at(b_id, coord)
+	if not bypass_cost and not check.get("ok", false):
 		return null
 		
+	var defs: Dictionary = BuildingCatalog.get_all_defs()
+	var def_info: Dictionary = defs.get(b_id, {})
 	var footprint: Vector2i = def_info.get("footprint", Vector2i(2, 2))
 	
-	# Validate tiles
-	for dy in range(footprint.y):
-		for dx in range(footprint.x):
-			var c: Vector2i = coord + Vector2i(dx, dy)
-			var tile: WorldTile = world_state.get_tile(c)
-			if tile == null or not tile.is_buildable:
-				return null
-				
 	# Deduct construction cost from Town Hall / nearest storehouse
 	if not bypass_cost:
 		var cost: Dictionary = def_info.get("cost", {})
-		if not _try_deduct_cost(cost):
-			return null
+		_try_deduct_cost(cost)
 			
 	# Instantiate building
 	var b_state: BuildingState = BuildingState.new(
@@ -262,7 +299,7 @@ func place_building(b_id: StringName, coord: Vector2i, bypass_cost: bool = false
 	b_state.tile_origin = coord
 	b_state.assigned_workers = def_info.get("worker_slots", 0) # Auto-assign initial workers
 	
-	# Mark tiles solid
+	# Mark tiles solid in world and pathfinder
 	for dy in range(footprint.y):
 		for dx in range(footprint.x):
 			var c: Vector2i = coord + Vector2i(dx, dy)
@@ -280,7 +317,6 @@ func _try_deduct_cost(cost: Dictionary) -> bool:
 	if cost.is_empty():
 		return true
 		
-	# Find town hall / main store
 	var main_inv: Inventory = buildings[0].inventory if not buildings.is_empty() else null
 	if main_inv == null:
 		return false
@@ -294,6 +330,41 @@ func _try_deduct_cost(cost: Dictionary) -> bool:
 		var req: int = cost[res_id]
 		main_inv.remove_resource(res_id, req, "CONSTRUCTION", false)
 	return true
+
+func _on_recruit_unit_requested(unit_def_id: StringName) -> void:
+	var defs: Dictionary = UnitDef.get_all_defs()
+	var unit_def: UnitDef = defs.get(unit_def_id, null)
+	if unit_def == null:
+		return
+		
+	# Find barracks
+	var barracks_b: BuildingState = null
+	for b in buildings:
+		if b.definition_id == &"barracks":
+			barracks_b = b
+			break
+	if barracks_b == null:
+		ui.show_toast("⚠ Build a Barracks first to recruit troops!", true)
+		return
+		
+	# Deduct recruitment cost (Coin) from town hall / main store
+	var main_inv: Inventory = buildings[0].inventory if not buildings.is_empty() else null
+	if main_inv == null:
+		return
+		
+	var coin_cost: int = unit_def.recruitment_cost.get(&"coin", 0)
+	if main_inv.get_available_outgoing(&"coin") < coin_cost:
+		ui.show_toast("⚠ Not enough Coin! (Need %d, have %d)" % [coin_cost, main_inv.get_available_outgoing(&"coin")], true)
+		return
+		
+	main_inv.remove_resource(&"coin", coin_cost, "RECRUITMENT", false)
+	
+	# Spawn unit just outside barracks
+	var spawn_pos: Vector2 = Vector2((barracks_b.tile_origin.x + 3) * 16.0, (barracks_b.tile_origin.y + 1) * 16.0)
+	var new_unit: MilitaryUnitState = combat.spawn_player_unit(unit_def_id, spawn_pos)
+	military_units.append(new_unit)
+	renderer.queue_redraw()
+	ui.show_toast("⚔ Recruited %s!" % unit_def.display_name, false)
 
 func _simulation_tick() -> void:
 	current_tick += 1
@@ -339,9 +410,51 @@ func _simulation_tick() -> void:
 	logistics.dispatch_jobs()
 	logistics.tick_haulers(inv_map, current_tick)
 	
-	# 5. Update UI counters
+	# 5. Visible Citizen Movement along jobs
+	_update_citizen_hauling_movement()
+	
+	# 6. Update UI counters
 	_update_ui_state(needs_report)
 	renderer.queue_redraw()
+
+func _update_citizen_hauling_movement() -> void:
+	for hauler in logistics.haulers:
+		var citizen: CitizenState = _find_citizen_by_id(hauler.id)
+		if citizen == null:
+			continue
+			
+		if hauler.active_job != null:
+			citizen.active_job_id = hauler.active_job.id
+			citizen.carried_resource = hauler.carried_resource
+			citizen.carried_amount = hauler.carried_amount
+			
+			var target_b: BuildingState = null
+			if hauler.active_job.status == HaulJob.Status.ASSIGNED:
+				target_b = _find_building_by_inv_id(hauler.active_job.source_inventory_id)
+			elif hauler.active_job.status == HaulJob.Status.IN_TRANSIT:
+				target_b = _find_building_by_inv_id(hauler.active_job.destination_inventory_id)
+				
+			if target_b != null:
+				var path: Array[Vector2i] = pathfinding.find_path_to_adjacent(citizen.position_tile, target_b.tile_origin)
+				if path.size() > 1:
+					citizen.position_tile = path[1]
+					hauler.current_tile = path[1]
+		else:
+			citizen.carried_resource = &""
+			citizen.carried_amount = 0
+			citizen.active_job_id = 0
+
+func _find_citizen_by_id(id: int) -> CitizenState:
+	for c in citizens:
+		if c.id == id:
+			return c
+	return null
+
+func _find_building_by_inv_id(inv_id: int) -> BuildingState:
+	for b in buildings:
+		if b.inventory.owner_id == inv_id:
+			return b
+	return null
 
 func _generate_logistics_demand() -> void:
 	var farm_b: BuildingState = null
@@ -400,6 +513,7 @@ func _on_tax_level_cycled() -> void:
 		EconomyState.TaxLevel.HIGH:
 			economy.tax_level = EconomyState.TaxLevel.LOW
 	ui.update_economy(economy.get_tax_level_name(), economy.approval)
+	ui.show_toast("Tax rate changed to %s" % economy.get_tax_level_name(), false)
 
 func _on_save_game() -> void:
 	var success: bool = SaveService.save_game_to_file(
@@ -412,15 +526,17 @@ func _on_save_game() -> void:
 		current_tick,
 		sim_speed_multiplier
 	)
-	print("Save game result: ", "SUCCESS" if success else "FAILED")
+	if success:
+		ui.show_toast("✔ Realm state saved successfully!", false)
+	else:
+		ui.show_toast("⚠ Failed to save realm!", true)
 
 func _on_load_game() -> void:
 	var loaded: Dictionary = SaveService.load_game_from_file()
 	if loaded.is_empty():
-		print("Load game failed or no save found.")
+		ui.show_toast("⚠ No valid save found!", true)
 		return
 		
-	# Reconstruct state from save
 	economy = loaded["economy"]
 	buildings = loaded["buildings"]
 	citizens = loaded["citizens"]
@@ -431,7 +547,6 @@ func _on_load_game() -> void:
 	current_tick = loaded["meta"].get("current_tick", 0)
 	sim_speed_multiplier = loaded["meta"].get("sim_speed", 1.0)
 	
-	# Update pathfinder solids for loaded buildings
 	pathfinding.initialize_from_world(world_state)
 	var defs: Dictionary = BuildingCatalog.get_all_defs()
 	for b in buildings:
@@ -441,7 +556,6 @@ func _on_load_game() -> void:
 				var c: Vector2i = b.tile_origin + Vector2i(dx, dy)
 				pathfinding.set_solid(c, true)
 				
-	# Re-link renderer
 	renderer.buildings = buildings
 	renderer.citizens = citizens
 	renderer.military_units = military_units
@@ -451,4 +565,4 @@ func _on_load_game() -> void:
 	renderer.selected_units = selected_units
 	renderer.queue_redraw()
 	ui.update_economy(economy.get_tax_level_name(), economy.approval)
-	print("Game successfully loaded at tick: ", current_tick)
+	ui.show_toast("✔ Realm loaded successfully!", false)
