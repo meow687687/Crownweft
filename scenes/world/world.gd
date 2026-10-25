@@ -104,13 +104,7 @@ func _setup_signals() -> void:
 		renderer.show_logistics_overlay = not renderer.show_logistics_overlay
 		renderer.queue_redraw()
 	)
-	ui.worker_assignment_changed.connect(func(delta: int):
-		if selected_building != null:
-			var defs: Dictionary = BuildingCatalog.get_all_defs()
-			var max_slots: int = defs.get(selected_building.definition_id, {}).get("worker_slots", 0)
-			selected_building.assigned_workers = clampi(selected_building.assigned_workers + delta, 0, max_slots)
-			ui.show_building_details(selected_building, defs.get(selected_building.definition_id, {}))
-	)
+	ui.worker_assignment_changed.connect(_on_worker_assignment_changed)
 	ui.recruit_unit_requested.connect(_on_recruit_unit_requested)
 	ui.tax_level_cycled.connect(_on_tax_level_cycled)
 	ui.save_game_requested.connect(_on_save_game)
@@ -134,7 +128,8 @@ func _process(delta: float) -> void:
 
 	if sim_speed_multiplier > 0.0:
 		var sim_delta: float = delta * sim_speed_multiplier
-		combat.tick_combat(military_units, sim_delta)
+		combat.tick_combat(military_units, sim_delta, buildings, pathfinding)
+		_cleanup_destroyed_buildings()
 		combat.tick_raid_timer(sim_delta, world_state.raider_camp_pos, military_units)
 		
 		sim_tick_timer += sim_delta
@@ -143,6 +138,89 @@ func _process(delta: float) -> void:
 			sim_tick_timer -= tick_interval
 			_simulation_tick()
 
+func _cleanup_destroyed_buildings() -> void:
+	var destroyed: Array[BuildingState] = []
+	for building: BuildingState in buildings:
+		if building.is_destroyed:
+			destroyed.append(building)
+	if destroyed.is_empty():
+		return
+	for building: BuildingState in destroyed:
+		# Release assigned citizens immediately; otherwise a destroyed workplace leaves
+		# workers permanently counted as employed and production can never recover.
+		for citizen: CitizenState in citizens:
+			if citizen.workplace_id == building.entity_id:
+				citizen.workplace_id = 0
+				citizen.role_id = &"unassigned"
+				citizen.path.clear()
+				citizen.move_state = CitizenState.MoveState.IDLE
+				citizen.target_tile = citizen.position_tile
+		var inv_id: int = building.inventory.owner_id
+		for job: HaulJob in job_board.jobs.values():
+			if job.status in [HaulJob.Status.DELIVERED, HaulJob.Status.CANCELLED]:
+				continue
+			var touches_source: bool = job.source_inventory_id == inv_id
+			var touches_dest: bool = job.destination_inventory_id == inv_id
+			if not touches_source and not touches_dest:
+				continue
+			var source_inv: Inventory = _find_inventory_by_id(job.source_inventory_id)
+			var dest_inv: Inventory = _find_inventory_by_id(job.destination_inventory_id)
+			var carrier = null
+			for candidate_hauler in logistics.haulers:
+				if candidate_hauler.active_job == job:
+					carrier = candidate_hauler
+					break
+			var has_physical_cargo: bool = carrier != null and carrier.carried_amount > 0
+			if has_physical_cargo:
+				# Never cancel a job whose goods have left the source. If its destination
+				# disappears, release only the destination reservation and keep the cargo.
+				if touches_dest:
+					if dest_inv != null and job.reserved_amount > 0:
+						dest_inv.release_reserved_in(job.resource_id, job.reserved_amount)
+					job.destination_inventory_id = -1
+					job.reserved_amount = 0
+					job.status = HaulJob.Status.BLOCKED
+					job.blocked_reason = "DESTINATION_DESTROYED — cargo retained for rerouting"
+					carrier.clear_path()
+				elif touches_source and job.status == HaulJob.Status.BLOCKED:
+					# The source no longer matters after pickup. Keep the job active so the
+					# carrier can still complete or reroute its delivery.
+					job.blocked_reason = "SOURCE_DESTROYED_AFTER_PICKUP — cargo retained"
+				continue
+			# Without cargo, cancel safely and release any pre-pickup reservations.
+			job_board.cancel_job(job, source_inv, dest_inv, "BUILDING_DESTROYED")
+			if carrier != null:
+				carrier.active_job = null
+				carrier.carried_resource = &""
+				carrier.carried_amount = 0
+				carrier.clear_path()
+		for y in range(BuildingCatalog.get_all_defs().get(building.definition_id, {}).get("footprint", Vector2i(2, 2)).y):
+			for x in range(BuildingCatalog.get_all_defs().get(building.definition_id, {}).get("footprint", Vector2i(2, 2)).x):
+				var coord: Vector2i = building.tile_origin + Vector2i(x, y)
+				var tile: WorldTile = world_state.get_tile(coord)
+				if tile == null or tile.building_id != building.entity_id:
+					continue
+				tile.building_id = 0
+				tile._update_flags()
+				pathfinding.set_solid(coord, not tile.is_walkable)
+		buildings.erase(building)
+		if selected_building == building:
+			selected_building = null
+			ui.show_building_details(null, {})
+		if building.definition_id == &"town_hall":
+			sim_speed_multiplier = 0.0
+			ui.show_toast("Town Hall destroyed. Realm lost.", true)
+		else:
+			ui.show_toast("%s destroyed" % str(building.definition_id).capitalize(), true)
+	renderer.buildings = buildings
+	renderer.queue_redraw()
+
+func _find_inventory_by_id(inventory_id: int) -> Inventory:
+	for building: BuildingState in buildings:
+		if building.inventory.owner_id == inventory_id:
+			return building.inventory
+	return null
+
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed:
 		var mb: InputEventMouseButton = event as InputEventMouseButton
@@ -150,9 +228,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		# Protection: Ignore clicks if mouse is over top HUD or bottom palette
 		var mouse_screen: Vector2 = get_viewport().get_mouse_position()
 		var screen_size: Vector2 = get_viewport().get_visible_rect().size
-		if mouse_screen.y < 50.0 or mouse_screen.y > (screen_size.y - 65.0):
+		if mouse_screen.y < 104.0 or mouse_screen.y > (screen_size.y - 142.0):
 			return
-		if ui.panel_inspector != null and ui.panel_inspector.visible and mouse_screen.x > (screen_size.x - 290.0):
+		if ui.panel_inspector != null and ui.panel_inspector.visible and mouse_screen.x > (screen_size.x - 320.0):
 			return
 			
 		var mouse_world: Vector2 = get_global_mouse_position()
@@ -214,6 +292,51 @@ func _find_unit_at(pos: Vector2) -> MilitaryUnitState:
 			return u
 	return null
 
+func _on_worker_assignment_changed(delta: int) -> void:
+	if selected_building == null or delta == 0:
+		return
+	var defs: Dictionary = BuildingCatalog.get_all_defs()
+	var def_info: Dictionary = defs.get(selected_building.definition_id, {})
+	var max_slots: int = int(def_info.get("worker_slots", 0))
+	if delta > 0:
+		var available: CitizenState = null
+		for citizen: CitizenState in citizens:
+			if citizen.role_id == &"unassigned" and citizen.workplace_id == 0:
+				available = citizen
+				break
+		if selected_building.assigned_workers >= max_slots:
+			ui.show_toast("This building has no open worker slots", true)
+			return
+		if available == null:
+			ui.show_toast("No unassigned workers available", true)
+			return
+		selected_building.assigned_workers += 1
+		available.workplace_id = selected_building.entity_id
+		available.role_id = _worker_role_for_building(selected_building.definition_id)
+		available.path.clear()
+		available.move_state = CitizenState.MoveState.MOVING
+	else:
+		for citizen: CitizenState in citizens:
+			if citizen.workplace_id == selected_building.entity_id and citizen.role_id != &"hauler":
+				citizen.workplace_id = 0
+				citizen.role_id = &"unassigned"
+				citizen.path.clear()
+				citizen.move_state = CitizenState.MoveState.IDLE
+				citizen.target_tile = citizen.position_tile
+				selected_building.assigned_workers = maxi(0, selected_building.assigned_workers - 1)
+				break
+	ui.show_building_details(selected_building, def_info)
+	renderer.queue_redraw()
+
+func _worker_role_for_building(building_id: StringName) -> StringName:
+	match building_id:
+		&"farm": return &"farmer"
+		&"woodcutter": return &"woodcutter"
+		&"quarry": return &"quarry_worker"
+		&"bakery": return &"baker"
+		&"storehouse": return &"storekeeper"
+		_: return &"worker"
+
 func _select_building_at(tile_coord: Vector2i) -> void:
 	selected_building = null
 	var defs: Dictionary = BuildingCatalog.get_all_defs()
@@ -255,7 +378,34 @@ func can_place_building_at(b_id: StringName, coord: Vector2i) -> Dictionary:
 			if not tile.is_buildable:
 				return {"ok": false, "reason": "Tile is occupied or blocked"}
 				
-	# Cost check against Town Hall
+	# A new footprint must not trap a citizen or be built under a military unit.
+	for citizen: CitizenState in citizens:
+		if Rect2i(coord, footprint).has_point(citizen.position_tile):
+			return {"ok": false, "reason": "A citizen is standing here"}
+	for unit: MilitaryUnitState in military_units:
+		if unit.is_dead:
+			continue
+		var unit_tile := Vector2i(floori(unit.position.x / 16.0), floori(unit.position.y / 16.0))
+		if Rect2i(coord, footprint).has_point(unit_tile):
+			return {"ok": false, "reason": "A troop is standing here"}
+
+	# Resource buildings need a real nearby deposit; they do not create infinite resources.
+	var required_deposit: StringName = StringName(def_info.get("harvest_deposit", ""))
+	if required_deposit != &"":
+		var deposit_found := false
+		for y in range(maxi(0, coord.y - 5), mini(world_state.height, coord.y + footprint.y + 5)):
+			for x in range(maxi(0, coord.x - 5), mini(world_state.width, coord.x + footprint.x + 5)):
+				var candidate: WorldTile = world_state.get_tile(Vector2i(x, y))
+				if candidate != null and candidate.resource_deposit_id == required_deposit and candidate.resource_amount > 0:
+					deposit_found = true
+					break
+			if deposit_found:
+				break
+		if not deposit_found:
+			return {"ok": false, "reason": "Requires a nearby %s deposit" % ("forest" if required_deposit == &"trees" else "stone" )}
+
+	# Construction costs are paid from the Town Hall's physical construction stockpile.
+	# Producers replenish it through explicit hauling jobs.
 	var main_inv: Inventory = buildings[0].inventory if not buildings.is_empty() else null
 	if main_inv != null:
 		var cost: Dictionary = def_info.get("cost", {})
@@ -271,7 +421,7 @@ func build_road(coord: Vector2i) -> void:
 	if tile != null and tile.is_walkable:
 		tile.road_level = 1
 		pathfinding.set_road(coord, true)
-		renderer.queue_redraw()
+		renderer.invalidate_world_visuals()
 		ui.show_toast("Built road section", false)
 
 func place_building(b_id: StringName, coord: Vector2i, bypass_cost: bool = false) -> BuildingState:
@@ -286,7 +436,8 @@ func place_building(b_id: StringName, coord: Vector2i, bypass_cost: bool = false
 	# Deduct construction cost from Town Hall / nearest storehouse
 	if not bypass_cost:
 		var cost: Dictionary = def_info.get("cost", {})
-		_try_deduct_cost(cost)
+		if not _try_deduct_cost(cost):
+			return null
 			
 	# Instantiate building
 	var b_state: BuildingState = BuildingState.new(
@@ -297,7 +448,9 @@ func place_building(b_id: StringName, coord: Vector2i, bypass_cost: bool = false
 	)
 	next_entity_id += 1
 	b_state.tile_origin = coord
-	b_state.assigned_workers = def_info.get("worker_slots", 0) # Auto-assign initial workers
+	b_state.assigned_workers = 0 # Workers must come from the finite citizen pool.
+	b_state.max_health = int(def_info.get("health", 100))
+	b_state.health = b_state.max_health
 	
 	# Mark tiles solid in world and pathfinder
 	for dy in range(footprint.y):
@@ -344,7 +497,7 @@ func _on_recruit_unit_requested(unit_def_id: StringName) -> void:
 			barracks_b = b
 			break
 	if barracks_b == null:
-		ui.show_toast("⚠ Build a Barracks first to recruit troops!", true)
+		ui.show_toast("Build a Barracks first to recruit troops", true)
 		return
 		
 	# Deduct recruitment cost (Coin) from town hall / main store
@@ -354,7 +507,7 @@ func _on_recruit_unit_requested(unit_def_id: StringName) -> void:
 		
 	var coin_cost: int = unit_def.recruitment_cost.get(&"coin", 0)
 	if main_inv.get_available_outgoing(&"coin") < coin_cost:
-		ui.show_toast("⚠ Not enough Coin! (Need %d, have %d)" % [coin_cost, main_inv.get_available_outgoing(&"coin")], true)
+		ui.show_toast("Not enough coin (need %d, have %d)" % [coin_cost, main_inv.get_available_outgoing(&"coin")], true)
 		return
 		
 	main_inv.remove_resource(&"coin", coin_cost, "RECRUITMENT", false)
@@ -364,31 +517,44 @@ func _on_recruit_unit_requested(unit_def_id: StringName) -> void:
 	var new_unit: MilitaryUnitState = combat.spawn_player_unit(unit_def_id, spawn_pos)
 	military_units.append(new_unit)
 	renderer.queue_redraw()
-	ui.show_toast("⚔ Recruited %s!" % unit_def.display_name, false)
+	ui.show_toast("Recruited %s" % unit_def.display_name, false)
 
 func _simulation_tick() -> void:
 	current_tick += 1
 	var defs: Dictionary = BuildingCatalog.get_all_defs()
-	
-	# 1. Advance Production
-	for b in buildings:
-		var recipe: RecipeDef = defs.get(b.definition_id, {}).get("recipe", null)
+
+	# Build maps once per simulation tick. Inventory IDs and building identities must agree.
+	var inv_map: Dictionary = {}
+	var building_by_inv: Dictionary = {}
+	for building: BuildingState in buildings:
+		inv_map[building.inventory.owner_id] = building.inventory
+		building_by_inv[building.inventory.owner_id] = building
+
+	# Assigned workers must physically reach their worksite before production can advance.
+	_update_worker_movement()
+
+	# 1. Production. Resource buildings consume finite deposits from the actual world.
+	for building: BuildingState in buildings:
+		var recipe: RecipeDef = defs.get(building.definition_id, {}).get("recipe", null)
 		if recipe != null:
-			production.tick_building(b, recipe)
-			
-	# 2. Advance Citizen Needs / Food consumption
+			production.tick_building(building, recipe, world_state, _count_workers_at_building(building))
+
+	# 2. Needs are supplied only by inventories the citizen can physically reach.
 	var food_inventories: Array[Inventory] = []
-	for b in buildings:
-		if b.inventory.get_available_outgoing(&"bread") > 0:
-			food_inventories.append(b.inventory)
-			
-	var needs_report: Dictionary = needs.tick_citizens(citizens, food_inventories, current_tick)
-	
-	# Military upkeep (soldiers consume bread every 24 ticks)
+	for building: BuildingState in buildings:
+		# Food is consumed from actual household-accessible stores only. Bread sitting
+		# in the bakery must be hauled to a storehouse or Town Hall first.
+		if building.definition_id in [&"town_hall", &"storehouse"] and building.inventory.get_available_outgoing(&"bread") > 0:
+			food_inventories.append(building.inventory)
+	var needs_report: Dictionary = needs.tick_citizens(
+		citizens, food_inventories, current_tick, building_by_inv, pathfinding
+	)
+
+	# Military upkeep must also come from the town's current food stock, not an unlimited pool.
 	if current_tick % 24 == 0:
 		combat.apply_military_upkeep(military_units, food_inventories)
-	
-	# Economy & Taxation
+
+	# 3. Taxes and public approval.
 	var main_inv: Inventory = buildings[0].inventory if not buildings.is_empty() else null
 	economy_system.tick_economy(
 		economy,
@@ -398,51 +564,112 @@ func _simulation_tick() -> void:
 		main_inv,
 		current_tick
 	)
-	
-	# 3. Logistics demand creation
+
+	# 4. Create demands, assign jobs, and physically move haulers along A* paths.
 	_generate_logistics_demand()
-	
-	# 4. Dispatch and tick haulers
-	var inv_map: Dictionary = {}
-	for b in buildings:
-		inv_map[b.inventory.owner_id] = b.inventory
-		
 	logistics.dispatch_jobs()
-	logistics.tick_haulers(inv_map, current_tick)
-	
-	# 5. Visible Citizen Movement along jobs
+	logistics.tick_haulers(inv_map, current_tick, pathfinding, building_by_inv)
 	_update_citizen_hauling_movement()
-	
-	# 6. Update UI counters
+
+	# 5. Keep the route overlay connected to live jobs.
+	renderer.active_jobs.clear()
+	for job: HaulJob in job_board.jobs.values():
+		if job.status != HaulJob.Status.DELIVERED and job.status != HaulJob.Status.CANCELLED:
+			renderer.active_jobs.append(job)
 	_update_ui_state(needs_report)
 	renderer.queue_redraw()
+
+func _update_worker_movement() -> void:
+	var defs: Dictionary = BuildingCatalog.get_all_defs()
+	for citizen: CitizenState in citizens:
+		if citizen.role_id == &"hauler":
+			continue
+		if citizen.workplace_id <= 0:
+			citizen.path.clear()
+			citizen.move_state = CitizenState.MoveState.IDLE
+			citizen.target_tile = citizen.position_tile
+			continue
+
+		var workplace: BuildingState = _find_building_by_entity_id(citizen.workplace_id)
+		if workplace == null or workplace.is_destroyed:
+			citizen.workplace_id = 0
+			citizen.role_id = &"unassigned"
+			citizen.path.clear()
+			citizen.move_state = CitizenState.MoveState.IDLE
+			citizen.target_tile = citizen.position_tile
+			continue
+
+		var footprint: Vector2i = defs.get(workplace.definition_id, {}).get("footprint", Vector2i.ONE)
+		if citizen.move_state == CitizenState.MoveState.IDLE and _is_adjacent_to_building(citizen.position_tile, workplace, footprint):
+			continue
+
+		if not citizen.path.is_empty() and pathfinding.astar_grid.is_point_solid(citizen.path[0]):
+			citizen.path.clear()
+
+		if citizen.path.is_empty():
+			var route: Array[Vector2i] = pathfinding.find_path_to_adjacent(
+				citizen.position_tile, workplace.tile_origin, footprint
+			)
+			if route.is_empty():
+				citizen.move_state = CitizenState.MoveState.IDLE
+				citizen.target_tile = citizen.position_tile
+				continue
+			citizen.path = route
+			citizen.target_tile = route[route.size() - 1]
+			if not citizen.path.is_empty():
+				citizen.path.remove_at(0) # The first route tile is the citizen's current tile.
+			if citizen.path.is_empty():
+				citizen.move_state = CitizenState.MoveState.IDLE
+				citizen.target_tile = citizen.position_tile
+				continue
+
+		if not citizen.path.is_empty():
+			citizen.position_tile = citizen.path.pop_front()
+			citizen.move_state = CitizenState.MoveState.MOVING if not citizen.path.is_empty() else CitizenState.MoveState.IDLE
+			if citizen.path.is_empty():
+				citizen.target_tile = citizen.position_tile
+
+func _count_workers_at_building(building: BuildingState) -> int:
+	var defs: Dictionary = BuildingCatalog.get_all_defs()
+	var footprint: Vector2i = defs.get(building.definition_id, {}).get("footprint", Vector2i.ONE)
+	var count: int = 0
+	for citizen: CitizenState in citizens:
+		if citizen.workplace_id != building.entity_id or citizen.role_id == &"hauler":
+			continue
+		if citizen.move_state == CitizenState.MoveState.IDLE and _is_adjacent_to_building(citizen.position_tile, building, footprint):
+			count += 1
+	return count
+
+func _is_adjacent_to_building(tile_coord: Vector2i, building: BuildingState, footprint: Vector2i) -> bool:
+	var left: int = building.tile_origin.x
+	var top: int = building.tile_origin.y
+	var right: int = left + footprint.x - 1
+	var bottom: int = top + footprint.y - 1
+	var within_x: bool = tile_coord.x >= left and tile_coord.x <= right
+	var within_y: bool = tile_coord.y >= top and tile_coord.y <= bottom
+	return (within_x and (tile_coord.y == top - 1 or tile_coord.y == bottom + 1)) or (within_y and (tile_coord.x == left - 1 or tile_coord.x == right + 1))
+
+func _find_building_by_entity_id(entity_id: int) -> BuildingState:
+	for building: BuildingState in buildings:
+		if building.entity_id == entity_id:
+			return building
+	return null
 
 func _update_citizen_hauling_movement() -> void:
 	for hauler in logistics.haulers:
 		var citizen: CitizenState = _find_citizen_by_id(hauler.id)
 		if citizen == null:
 			continue
-			
+		citizen.position_tile = hauler.current_tile
 		if hauler.active_job != null:
 			citizen.active_job_id = hauler.active_job.id
 			citizen.carried_resource = hauler.carried_resource
 			citizen.carried_amount = hauler.carried_amount
-			
-			var target_b: BuildingState = null
-			if hauler.active_job.status == HaulJob.Status.ASSIGNED:
-				target_b = _find_building_by_inv_id(hauler.active_job.source_inventory_id)
-			elif hauler.active_job.status == HaulJob.Status.IN_TRANSIT:
-				target_b = _find_building_by_inv_id(hauler.active_job.destination_inventory_id)
-				
-			if target_b != null:
-				var path: Array[Vector2i] = pathfinding.find_path_to_adjacent(citizen.position_tile, target_b.tile_origin)
-				if path.size() > 1:
-					citizen.position_tile = path[1]
-					hauler.current_tile = path[1]
 		else:
 			citizen.carried_resource = &""
 			citizen.carried_amount = 0
 			citizen.active_job_id = 0
+
 
 func _find_citizen_by_id(id: int) -> CitizenState:
 	for c in citizens:
@@ -457,27 +684,51 @@ func _find_building_by_inv_id(inv_id: int) -> BuildingState:
 	return null
 
 func _generate_logistics_demand() -> void:
+	var town_hall: BuildingState = null
 	var farm_b: BuildingState = null
 	var bakery_b: BuildingState = null
-	var store_b: BuildingState = null
-	
+	var storehouse_b: BuildingState = null
+	var woodcutter_b: BuildingState = null
+	var quarry_b: BuildingState = null
+
 	for b in buildings:
-		if b.definition_id == &"farm" and farm_b == null:
-			farm_b = b
-		elif b.definition_id == &"bakery" and bakery_b == null:
-			bakery_b = b
-		elif (b.definition_id == &"storehouse" or b.definition_id == &"town_hall") and store_b == null:
-			store_b = b
-			
-	# Haul grain from farm to bakery
+		match b.definition_id:
+			&"town_hall":
+				town_hall = b
+			&"farm":
+				if farm_b == null:
+					farm_b = b
+			&"bakery":
+				if bakery_b == null:
+					bakery_b = b
+			&"storehouse":
+				if storehouse_b == null:
+					storehouse_b = b
+			&"woodcutter":
+				if woodcutter_b == null:
+					woodcutter_b = b
+			&"quarry":
+				if quarry_b == null:
+					quarry_b = b
+
 	if farm_b != null and bakery_b != null:
 		if bakery_b.inventory.get_quantity(&"grain") + bakery_b.inventory.get_reserved_in(&"grain") < 6:
-			logistics.check_and_create_demand(farm_b, bakery_b, &"grain", 4, current_tick, 2)
-			
-	# Haul bread from bakery to storehouse / town hall
-	if bakery_b != null and store_b != null:
-		if bakery_b.inventory.get_available_outgoing(&"bread") > 0:
-			logistics.check_and_create_demand(bakery_b, store_b, &"bread", 4, current_tick, 1)
+			logistics.check_and_create_demand(farm_b, bakery_b, &"grain", 4, current_tick, 3)
+
+	var food_destination: BuildingState = storehouse_b if storehouse_b != null else town_hall
+	if bakery_b != null and food_destination != null and bakery_b != food_destination:
+		if bakery_b.inventory.get_available_outgoing(&"bread") >= 2 and food_destination.inventory.get_quantity(&"bread") < 40:
+			logistics.check_and_create_demand(bakery_b, food_destination, &"bread", 4, current_tick, 2)
+
+	# Construction is paid from Town Hall stock. Locally produced materials must be hauled there.
+	if town_hall != null and woodcutter_b != null:
+		var timber_inbound: int = town_hall.inventory.get_quantity(&"timber") + town_hall.inventory.get_reserved_in(&"timber")
+		if timber_inbound < 35:
+			logistics.check_and_create_demand(woodcutter_b, town_hall, &"timber", 4, current_tick, 2)
+	if town_hall != null and quarry_b != null:
+		var stone_inbound: int = town_hall.inventory.get_quantity(&"stone") + town_hall.inventory.get_reserved_in(&"stone")
+		if stone_inbound < 20:
+			logistics.check_and_create_demand(quarry_b, town_hall, &"stone", 4, current_tick, 2)
 
 func _update_ui_state(needs_report: Dictionary) -> void:
 	var total_coin: int = 0
@@ -500,7 +751,7 @@ func _update_ui_state(needs_report: Dictionary) -> void:
 	
 	if selected_building != null:
 		var defs: Dictionary = BuildingCatalog.get_all_defs()
-		ui.show_building_details(selected_building, defs.get(selected_building.definition_id, {}))
+		ui.show_building_details(selected_building, defs.get(selected_building.definition_id, {}), _count_workers_at_building(selected_building))
 
 func _on_tax_level_cycled() -> void:
 	if economy == null:
@@ -527,34 +778,65 @@ func _on_save_game() -> void:
 		sim_speed_multiplier
 	)
 	if success:
-		ui.show_toast("✔ Realm state saved successfully!", false)
+		ui.show_toast("Realm state saved successfully", false)
 	else:
-		ui.show_toast("⚠ Failed to save realm!", true)
+		ui.show_toast("Failed to save realm", true)
 
 func _on_load_game() -> void:
 	var loaded: Dictionary = SaveService.load_game_from_file()
 	if loaded.is_empty():
-		ui.show_toast("⚠ No valid save found!", true)
+		ui.show_toast("No valid save found", true)
 		return
 		
+	if loaded.has("world_state") and loaded["world_state"] != null:
+		world_state = loaded["world_state"]
+		renderer.world_state = world_state
+		renderer.invalidate_world_visuals()
 	economy = loaded["economy"]
 	buildings = loaded["buildings"]
 	citizens = loaded["citizens"]
 	military_units = loaded["military_units"]
 	job_board = loaded["job_board"]
 	logistics.job_board = job_board
-	
+	logistics.haulers.clear()
+	combat.unit_navigation.clear()
+	for citizen: CitizenState in citizens:
+		if citizen.role_id == &"hauler":
+			var restored_hauler = logistics.register_hauler(citizen.id, citizen.position_tile)
+			var active_job: HaulJob = null
+			for candidate: HaulJob in job_board.jobs.values():
+				if candidate.assigned_citizen_id == citizen.id and candidate.status in [HaulJob.Status.ASSIGNED, HaulJob.Status.IN_TRANSIT, HaulJob.Status.BLOCKED]:
+					# A blocked job can still own physical cargo after a destination is lost.
+					if candidate.status != HaulJob.Status.BLOCKED or citizen.carried_amount > 0:
+						active_job = candidate
+						break
+			if active_job != null:
+				restored_hauler.active_job = active_job
+				if active_job.status == HaulJob.Status.IN_TRANSIT or citizen.carried_amount > 0:
+					restored_hauler.carried_resource = citizen.carried_resource if citizen.carried_resource != &"" else active_job.resource_id
+					restored_hauler.carried_amount = citizen.carried_amount if citizen.carried_amount > 0 else active_job.amount
+
 	current_tick = loaded["meta"].get("current_tick", 0)
 	sim_speed_multiplier = loaded["meta"].get("sim_speed", 1.0)
 	
 	pathfinding.initialize_from_world(world_state)
 	var defs: Dictionary = BuildingCatalog.get_all_defs()
-	for b in buildings:
-		var footprint: Vector2i = defs.get(b.definition_id, {}).get("footprint", Vector2i(2, 2))
-		for dy in range(footprint.y):
-			for dx in range(footprint.x):
+	next_entity_id = 1
+	combat.next_unit_id = 1000
+	var max_job_id: int = 0
+	for b: BuildingState in buildings:
+		next_entity_id = maxi(next_entity_id, b.entity_id + 1)
+		for dy in range(defs.get(b.definition_id, {}).get("footprint", Vector2i(2, 2)).y):
+			for dx in range(defs.get(b.definition_id, {}).get("footprint", Vector2i(2, 2)).x):
 				var c: Vector2i = b.tile_origin + Vector2i(dx, dy)
 				pathfinding.set_solid(c, true)
+	for c: CitizenState in citizens:
+		next_entity_id = maxi(next_entity_id, c.id + 1)
+	for u: MilitaryUnitState in military_units:
+		combat.next_unit_id = maxi(combat.next_unit_id, u.id + 1)
+	for job_id in job_board.jobs.keys():
+		max_job_id = maxi(max_job_id, int(job_id))
+	job_board._next_job_id = max_job_id + 1
 				
 	renderer.buildings = buildings
 	renderer.citizens = citizens
@@ -564,5 +846,6 @@ func _on_load_game() -> void:
 	renderer.selected_building = null
 	renderer.selected_units = selected_units
 	renderer.queue_redraw()
+	_update_ui_state({"fed": 0, "hungry": 0, "at_risk": 0})
 	ui.update_economy(economy.get_tax_level_name(), economy.approval)
-	ui.show_toast("✔ Realm loaded successfully!", false)
+	ui.show_toast("Realm loaded successfully", false)

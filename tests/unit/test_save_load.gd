@@ -19,6 +19,9 @@ func assert_eq(a, b, msg: String = "") -> void:
 func test_full_roundtrip_serialization() -> void:
 	# 1. Construct representative game state
 	var world: WorldState = WorldState.new(96, 96, 777888)
+	var saved_tile := WorldTile.new(Vector2i(10, 10), &"forest", 0.82)
+	saved_tile.resource_amount = 7
+	world.set_tile(Vector2i(10, 10), saved_tile)
 	var economy: EconomyState = EconomyState.new()
 	economy.tax_level = EconomyState.TaxLevel.HIGH
 	economy.approval = 73.5
@@ -45,6 +48,8 @@ func test_full_roundtrip_serialization() -> void:
 	var c1: CitizenState = CitizenState.new(101, Vector2i(26, 45), &"hauler")
 	c1.carried_resource = &"grain"
 	c1.carried_amount = 5
+	c1.workplace_id = 10
+	c1.home_building_id = 20
 	c1.hunger_counter = 2
 	c1.food_state = CitizenState.FoodState.HUNGRY
 	
@@ -88,7 +93,7 @@ func test_full_roundtrip_serialization() -> void:
 	
 	# 4. Assert integrity of deserialized data
 	var loaded_meta: Dictionary = loaded_data["meta"]
-	assert_eq(loaded_meta["schema_version"], 1)
+	assert_eq(loaded_meta["schema_version"], 2)
 	assert_eq(loaded_meta["seed_val"], 777888)
 	assert_eq(loaded_meta["current_tick"], 142)
 	assert_eq(loaded_meta["sim_speed"], 2.0)
@@ -120,7 +125,15 @@ func test_full_roundtrip_serialization() -> void:
 	assert_eq(lc1.role_id, &"hauler")
 	assert_eq(lc1.carried_resource, &"grain")
 	assert_eq(lc1.carried_amount, 5)
+	assert_eq(lc1.workplace_id, 10)
+	assert_eq(lc1.home_building_id, 20)
 	assert_eq(lc1.food_state, CitizenState.FoodState.HUNGRY)
+	assert_true(loaded_data["world_state"] != null, "Saved world must be restored")
+	assert_eq(loaded_data["world_state"].width, 96)
+	var restored_tile: WorldTile = loaded_data["world_state"].get_tile(Vector2i(10, 10))
+	assert_true(restored_tile != null, "Saved world tile must be restored")
+	assert_eq(restored_tile.terrain_id, &"forest")
+	assert_eq(restored_tile.resource_amount, 7)
 	
 	var loaded_units: Array = loaded_data["military_units"]
 	assert_eq(loaded_units.size(), 1)

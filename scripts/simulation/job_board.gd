@@ -88,10 +88,29 @@ func cancel_job(job: HaulJob, source_inv: Inventory, dest_inv: Inventory, reason
 			dest_inv.release_reserved_in(job.resource_id, job.reserved_amount)
 		job.reserved_amount = 0
 	elif job.status == HaulJob.Status.IN_TRANSIT:
-		# If already in transit, destination reservation must still be released
-		if dest_inv != null and job.reserved_amount > 0:
+		# Cargo has already left the source. Cancelling here would silently destroy it.
+		# Keep the job recoverable; LogisticsSystem can reroute it to another inventory.
+		job.status = HaulJob.Status.BLOCKED
+		job.blocked_reason = "IN_TRANSIT_CANNOT_CANCEL — cargo retained: %s" % reason
+		return
+	elif job.status == HaulJob.Status.BLOCKED:
+		# A blocked pre-pickup job still owns an outgoing reservation; a carried-cargo
+		# job no longer does. Never release the latter as if it were still at source.
+		var source_reservation: int = source_inv.get_reserved_out(job.resource_id) if source_inv != null else 0
+		if source_inv != null and dest_inv != null and job.reserved_amount > 0 and source_reservation >= job.reserved_amount:
+			source_inv.release_reserved_out(job.resource_id, job.reserved_amount)
 			dest_inv.release_reserved_in(job.resource_id, job.reserved_amount)
-		job.reserved_amount = 0
+			job.reserved_amount = 0
+		elif source_inv == null:
+			# The source building was removed before pickup. No carrier owns the stock,
+			# so release the surviving destination reservation if there is one.
+			if dest_inv != null and job.reserved_amount > 0:
+				dest_inv.release_reserved_in(job.resource_id, job.reserved_amount)
+			job.reserved_amount = 0
+		else:
+			# Without proof that this is a pre-pickup reservation, preserve job state.
+			job.blocked_reason = "BLOCKED_JOB_REQUIRES_CARGO_RECONCILIATION: %s" % reason
+			return
 	
 	job.status = HaulJob.Status.CANCELLED
 	job.blocked_reason = reason

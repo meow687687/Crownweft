@@ -1,7 +1,7 @@
 class_name SaveSchema
 extends RefCounted
 
-const SCHEMA_VERSION: int = 1
+const SCHEMA_VERSION: int = 2
 const GENERATOR_VERSION: int = 1
 
 static func serialize(
@@ -28,11 +28,34 @@ static func serialize(
 			"last_tax_income": economy.last_tax_income if economy != null else 0,
 			"last_tax_tick": economy.last_tax_tick if economy != null else 0
 		},
+		"world": {
+			"width": world_state.width if world_state != null else 0,
+			"height": world_state.height if world_state != null else 0,
+			"start_settlement_pos": [world_state.start_settlement_pos.x, world_state.start_settlement_pos.y] if world_state != null else [0, 0],
+			"raider_camp_pos": [world_state.raider_camp_pos.x, world_state.raider_camp_pos.y] if world_state != null else [0, 0],
+			"tiles": []
+		},
 		"buildings": [],
 		"citizens": [],
 		"military_units": [],
 		"jobs": []
 	}
+
+	if world_state != null:
+		for tile: WorldTile in world_state.tiles:
+			if tile == null:
+				data["world"]["tiles"].append(null)
+				continue
+			data["world"]["tiles"].append({
+				"terrain_id": str(tile.terrain_id),
+				"fertility": tile.fertility,
+				"resource_deposit_id": str(tile.resource_deposit_id),
+				"resource_amount": tile.resource_amount,
+				"building_id": tile.building_id,
+				"road_level": tile.road_level,
+				"is_buildable": tile.is_buildable,
+				"is_walkable": tile.is_walkable
+			})
 	
 	# Serialize buildings
 	for b in buildings:
@@ -43,6 +66,9 @@ static func serialize(
 			"assigned_workers": b.assigned_workers,
 			"production_progress": b.production_progress,
 			"block_reason": str(b.current_block_reason),
+			"health": b.health,
+			"max_health": b.max_health,
+			"is_destroyed": b.is_destroyed,
 			"inventory": {
 				"capacity": b.inventory.capacity,
 				"quantities": b.inventory.quantities.duplicate(),
@@ -57,8 +83,12 @@ static func serialize(
 	for c in citizens:
 		var c_dict: Dictionary = {
 			"id": c.id,
+			"home_building_id": c.home_building_id,
+			"workplace_id": c.workplace_id,
 			"role_id": str(c.role_id),
 			"position_tile": [c.position_tile.x, c.position_tile.y],
+			"target_tile": [c.target_tile.x, c.target_tile.y],
+			"move_state": c.move_state,
 			"hunger_counter": c.hunger_counter,
 			"food_state": c.food_state,
 			"carried_resource": str(c.carried_resource),
@@ -113,12 +143,44 @@ static func deserialize(data: Dictionary) -> Dictionary:
 		
 	var result: Dictionary = {
 		"meta": meta,
+		"world_state": null,
 		"economy": EconomyState.new(),
 		"buildings": [],
 		"citizens": [],
 		"military_units": [],
 		"job_board": JobBoard.new()
 	}
+
+	var world_data: Dictionary = data.get("world", {})
+	if not world_data.is_empty():
+		var world_width: int = int(world_data.get("width", WorldState.DEFAULT_WIDTH))
+		var world_height: int = int(world_data.get("height", WorldState.DEFAULT_HEIGHT))
+		var saved_seed: int = int(meta.get("seed_val", 0))
+		var restored_world := WorldState.new(world_width, world_height, saved_seed)
+		restored_world.generator_version = int(meta.get("generator_version", GENERATOR_VERSION))
+		var start_arr: Array = world_data.get("start_settlement_pos", [0, 0])
+		var camp_arr: Array = world_data.get("raider_camp_pos", [0, 0])
+		restored_world.start_settlement_pos = Vector2i(int(start_arr[0]), int(start_arr[1]))
+		restored_world.raider_camp_pos = Vector2i(int(camp_arr[0]), int(camp_arr[1]))
+		var saved_tiles: Array = world_data.get("tiles", [])
+		for index in range(mini(saved_tiles.size(), world_width * world_height)):
+			var tile_data = saved_tiles[index]
+			if tile_data == null:
+				continue
+			var coord := Vector2i(index % world_width, int(index / world_width))
+			var tile := WorldTile.new(coord, StringName(tile_data.get("terrain_id", "grass")), float(tile_data.get("fertility", 0.5)))
+			tile.resource_deposit_id = StringName(tile_data.get("resource_deposit_id", ""))
+			tile.resource_amount = int(tile_data.get("resource_amount", 0))
+			tile.building_id = int(tile_data.get("building_id", 0))
+			tile.road_level = int(tile_data.get("road_level", 0))
+			tile.is_buildable = bool(tile_data.get("is_buildable", true))
+			tile.is_walkable = bool(tile_data.get("is_walkable", true))
+			restored_world.set_tile(coord, tile)
+		result["world_state"] = restored_world
+	else:
+		# Backward compatibility with v1 saves that only recorded a seed.
+		var legacy_seed: int = int(meta.get("seed_val", 2026))
+		result["world_state"] = WorldGenerationService.new().generate_world(legacy_seed)
 	
 	# Deserialize economy
 	var eco_data: Dictionary = data.get("economy", {})
@@ -141,6 +203,9 @@ static func deserialize(data: Dictionary) -> Dictionary:
 		b.assigned_workers = b_dict.get("assigned_workers", 0)
 		b.production_progress = b_dict.get("production_progress", 0)
 		b.current_block_reason = StringName(b_dict.get("block_reason", ""))
+		b.health = int(b_dict.get("health", 100))
+		b.max_health = int(b_dict.get("max_health", 100))
+		b.is_destroyed = bool(b_dict.get("is_destroyed", false))
 		
 		# Restore inventory quantities & reservations
 		var inv_data: Dictionary = b_dict["inventory"]
@@ -163,6 +228,11 @@ static func deserialize(data: Dictionary) -> Dictionary:
 			Vector2i(c_pos_arr[0], c_pos_arr[1]),
 			StringName(c_dict["role_id"])
 		)
+		c.home_building_id = int(c_dict.get("home_building_id", 0))
+		c.workplace_id = int(c_dict.get("workplace_id", 0))
+		var target_arr: Array = c_dict.get("target_tile", c_pos_arr)
+		c.target_tile = Vector2i(int(target_arr[0]), int(target_arr[1]))
+		c.move_state = int(c_dict.get("move_state", CitizenState.MoveState.IDLE))
 		c.hunger_counter = c_dict.get("hunger_counter", 0)
 		c.food_state = c_dict.get("food_state", CitizenState.FoodState.FED)
 		c.carried_resource = StringName(c_dict.get("carried_resource", ""))

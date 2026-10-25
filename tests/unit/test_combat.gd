@@ -5,6 +5,8 @@ func _init() -> void:
 	test_unit_movement_order()
 	test_melee_and_ranged_combat()
 	test_starvation_debuff_and_upkeep()
+	test_raiders_attack_buildings_without_defenders()
+	test_move_order_routes_around_blocked_tiles()
 	print("--- TestCombat PASSED ---\n")
 	quit(0)
 
@@ -73,3 +75,39 @@ func test_starvation_debuff_and_upkeep() -> void:
 	combat.apply_military_upkeep([spearman], [storehouse_inv])
 	assert_true(not spearman.is_starving, "Soldier is nourished when bread is available")
 	assert_eq(storehouse_inv.get_quantity(&"bread"), 0, "Bread consumed for upkeep")
+
+func test_raiders_attack_buildings_without_defenders() -> void:
+	var combat: CombatSystem = CombatSystem.new()
+	var town_hall: BuildingState = BuildingState.new(7, &"town_hall", 150, [&"coin", &"bread", &"grain", &"timber", &"stone"])
+	town_hall.tile_origin = Vector2i(2, 2)
+	town_hall.max_health = 300
+	town_hall.health = 300
+	var raider: MilitaryUnitState = combat.spawn_raider_unit(Vector2(20.0, 20.0))
+	var units: Array[MilitaryUnitState] = [raider]
+	var before: int = town_hall.health
+	for _i in range(12):
+		combat.tick_combat(units, 0.5, [town_hall])
+	assert_true(town_hall.health < before, "Raiders must damage buildings when the settlement has no defenders")
+
+func test_move_order_routes_around_blocked_tiles() -> void:
+	var world := WorldState.new(10, 10, 2026)
+	for y in range(world.height):
+		for x in range(world.width):
+			var coord := Vector2i(x, y)
+			world.set_tile(coord, WorldTile.new(coord, &"grass", 0.6))
+	var pathfinding := PathfindingService.new(world.width, world.height)
+	pathfinding.initialize_from_world(world)
+	for y in range(0, 9):
+		pathfinding.set_solid(Vector2i(4, y), true)
+	var combat := CombatSystem.new()
+	var unit := combat.spawn_player_unit(&"spearman", Vector2(40.0, 40.0))
+	unit.set_move_order(Vector2(120.0, 40.0))
+	var units: Array[MilitaryUnitState] = [unit]
+	var lowest_y: float = unit.position.y
+	for _i in range(100):
+		combat.tick_combat(units, 0.25, [], pathfinding)
+		lowest_y = maxf(lowest_y, unit.position.y)
+		var tile := Vector2i(floori(unit.position.x / 16.0), floori(unit.position.y / 16.0))
+		assert_true(not pathfinding.astar_grid.is_point_solid(tile), "Unit must not cross a blocked tile")
+	assert_true(lowest_y > 40.0, "Unit should route around the vertical wall instead of walking straight through")
+	assert_true(unit.position.distance_to(Vector2(120.0, 40.0)) < 3.0, "Unit should eventually reach its move destination")

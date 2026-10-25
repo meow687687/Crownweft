@@ -64,25 +64,33 @@ func find_path(from_coord: Vector2i, to_coord: Vector2i) -> Array[Vector2i]:
 	var path_arr: Array[Vector2i] = astar_grid.get_id_path(from_coord, to_coord)
 	return path_arr
 
-func find_path_to_adjacent(from_coord: Vector2i, target_coord: Vector2i) -> Array[Vector2i]:
-	# Used when walking to a building footprint that is solid
-	var neighbors: Array[Vector2i] = [
-		target_coord + Vector2i.UP,
-		target_coord + Vector2i.DOWN,
-		target_coord + Vector2i.LEFT,
-		target_coord + Vector2i.RIGHT
-	]
-	
+func find_path_to_adjacent(
+	from_coord: Vector2i,
+	target_coord: Vector2i,
+	footprint: Vector2i = Vector2i.ONE
+) -> Array[Vector2i]:
+	# Find a reachable tile along the complete perimeter of the target footprint.
+	# Checking only the top-left tile's four neighbors makes most edges of 2x2/3x3
+	# buildings inaccessible once the whole footprint is marked solid.
+	var neighbors: Array[Vector2i] = []
+	for x in range(footprint.x):
+		neighbors.append(target_coord + Vector2i(x, -1))
+		neighbors.append(target_coord + Vector2i(x, footprint.y))
+	for y in range(footprint.y):
+		neighbors.append(target_coord + Vector2i(-1, y))
+		neighbors.append(target_coord + Vector2i(footprint.x, y))
+
 	var best_path: Array[Vector2i] = []
 	var best_length: int = 999999
-	
-	for n in neighbors:
-		if astar_grid.is_in_bounds(n.x, n.y) and not astar_grid.is_point_solid(n):
-			var p = find_path(from_coord, n)
-			if not p.is_empty() and p.size() < best_length:
-				best_path = p
-				best_length = p.size()
-				
+	for neighbor: Vector2i in neighbors:
+		if not astar_grid.is_in_bounds(neighbor.x, neighbor.y):
+			continue
+		if astar_grid.is_point_solid(neighbor):
+			continue
+		var candidate: Array[Vector2i] = find_path(from_coord, neighbor)
+		if not candidate.is_empty() and candidate.size() < best_length:
+			best_path = candidate
+			best_length = candidate.size()
 	return best_path
 
 func is_reachable(from_coord: Vector2i, to_coord: Vector2i) -> bool:

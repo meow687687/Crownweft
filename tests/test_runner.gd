@@ -11,7 +11,8 @@ const SUITES: Array[String] = [
 	"res://tests/unit/test_economy.gd",
 	"res://tests/unit/test_save_load.gd",
 	"res://tests/integration/test_simulation_proof.gd",
-	"res://tests/integration/test_military_slice.gd"
+	"res://tests/integration/test_military_slice.gd",
+	"res://tests/integration/test_physical_hauling.gd"
 ]
 
 func _init() -> void:
@@ -25,7 +26,7 @@ func _init() -> void:
 	for suite_path: String in SUITES:
 		print("\n>> Executing: %s" % suite_path)
 		var output: Array = []
-		var exit_code: int = OS.execute(godot_bin, ["--headless", "-s", suite_path], output, true)
+		var exit_code: int = OS.execute(godot_bin, ["--headless", "--path", ProjectSettings.globalize_path("res://"), "--script", suite_path], output, true)
 		for line in output:
 			print(line)
 		if exit_code != 0:

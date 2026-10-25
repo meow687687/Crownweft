@@ -48,12 +48,32 @@ func test_end_to_end_production_and_hauling() -> void:
 		bakery.inventory.owner_id: bakery.inventory,
 		storehouse.inventory.owner_id: storehouse.inventory
 	}
+	farm.tile_origin = Vector2i(2, 2)
+	bakery.tile_origin = Vector2i(7, 2)
+	storehouse.tile_origin = Vector2i(10, 7)
+	var test_world := WorldState.new(16, 12, 123)
+	for y in range(test_world.height):
+		for x in range(test_world.width):
+			var coord := Vector2i(x, y)
+			test_world.set_tile(coord, WorldTile.new(coord, &"grass", 0.7))
+	var pathfinding := PathfindingService.new(test_world.width, test_world.height)
+	pathfinding.initialize_from_world(test_world)
+	for building in [farm, bakery, storehouse]:
+		var footprint: Vector2i = BuildingCatalog.get_all_defs().get(building.definition_id, {}).get("footprint", Vector2i.ONE)
+		for dy in range(footprint.y):
+			for dx in range(footprint.x):
+				pathfinding.set_solid(building.tile_origin + Vector2i(dx, dy), true)
+	var building_by_inventory: Dictionary = {
+		farm.inventory.owner_id: farm,
+		bakery.inventory.owner_id: bakery,
+		storehouse.inventory.owner_id: storehouse
+	}
 	
-	# 1 Hauler
-	var hauler = log_sys.register_hauler(100)
+	# 1 Hauler. It must walk to each building before a transfer can commit.
+	var hauler = log_sys.register_hauler(100, Vector2i(2, 8))
 	
 	# Simulation runs for 30 ticks
-	for tick in range(1, 31):
+	for tick in range(1, 101):
 		# 1. Advance production
 		prod_sys.tick_building(farm, recipe_grain)
 		prod_sys.tick_building(bakery, recipe_bread)
@@ -69,9 +89,9 @@ func test_end_to_end_production_and_hauling() -> void:
 			
 		# 3. Dispatch and advance haulers
 		log_sys.dispatch_jobs()
-		log_sys.tick_haulers(inventories, tick)
+		log_sys.tick_haulers(inventories, tick, pathfinding, building_by_inventory)
 	
-	print("Simulation after 30 ticks:")
+	print("Simulation after 100 ticks:")
 	print(" - Farm Grain: ", farm.inventory.get_quantity(&"grain"))
 	print(" - Bakery Grain: ", bakery.inventory.get_quantity(&"grain"))
 	print(" - Bakery Bread: ", bakery.inventory.get_quantity(&"bread"))

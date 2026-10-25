@@ -3,6 +3,29 @@ extends Node2D
 
 const TILE_SIZE: float = 16.0
 
+# Small hand-authored pixel sprites; nearest-neighbour filtering preserves their pixels.
+const TEX_GRASS_A = preload("res://assets/pixel/tiles/grass_a.png")
+const TEX_GRASS_B = preload("res://assets/pixel/tiles/grass_b.png")
+const TEX_FOREST_A = preload("res://assets/pixel/tiles/forest_a.png")
+const TEX_FOREST_B = preload("res://assets/pixel/tiles/forest_b.png")
+const TEX_ROCK = preload("res://assets/pixel/tiles/rock.png")
+const TEX_WATER = preload("res://assets/pixel/tiles/water.png")
+const TEX_ROAD = preload("res://assets/pixel/tiles/road.png")
+const TEX_TOWN_HALL = preload("res://assets/pixel/buildings/town_hall.png")
+const TEX_HOUSE = preload("res://assets/pixel/buildings/house.png")
+const TEX_FARM = preload("res://assets/pixel/buildings/farm.png")
+const TEX_WOODCUTTER = preload("res://assets/pixel/buildings/woodcutter.png")
+const TEX_QUARRY = preload("res://assets/pixel/buildings/quarry.png")
+const TEX_BAKERY = preload("res://assets/pixel/buildings/bakery.png")
+const TEX_STOREHOUSE = preload("res://assets/pixel/buildings/storehouse.png")
+const TEX_BARRACKS = preload("res://assets/pixel/buildings/barracks.png")
+const TEX_CITIZEN = preload("res://assets/pixel/units/citizen.png")
+const TEX_HAULER = preload("res://assets/pixel/units/hauler.png")
+const TEX_FARMER = preload("res://assets/pixel/units/farmer.png")
+const TEX_SPEARMAN = preload("res://assets/pixel/units/spearman.png")
+const TEX_ARCHER = preload("res://assets/pixel/units/archer.png")
+const TEX_RAIDER = preload("res://assets/pixel/units/raider.png")
+
 var world_state: WorldState = null
 var buildings: Array[BuildingState] = []
 var citizens: Array[CitizenState] = []
@@ -16,6 +39,24 @@ var selected_building: BuildingState = null
 var active_build_id: StringName = &""
 var hover_tile: Vector2i = Vector2i(-1, -1)
 var is_hover_valid: bool = false
+var _redraw_accumulator: float = 0.0
+const VISUAL_REFRESH_INTERVAL: float = 1.0 / 30.0
+var _terrain_cache: Texture2D = null
+var _road_cache: Texture2D = null
+var _terrain_cache_world: WorldState = null
+var _road_cache_world: WorldState = null
+
+func _ready() -> void:
+	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	set_process(true)
+
+func _process(delta: float) -> void:
+	# Combat motion advances every frame; redraw at a capped visual rate instead
+	# of only redrawing on the slower economic tick (which made troops stutter).
+	_redraw_accumulator += delta
+	if _redraw_accumulator >= VISUAL_REFRESH_INTERVAL:
+		_redraw_accumulator = fmod(_redraw_accumulator, VISUAL_REFRESH_INTERVAL)
+		queue_redraw()
 
 func _draw() -> void:
 	if world_state == null:
@@ -44,97 +85,119 @@ func _draw() -> void:
 	if active_build_id != &"" and hover_tile.x >= 0 and hover_tile.y >= 0:
 		_draw_build_ghost()
 
+func invalidate_world_visuals() -> void:
+	_terrain_cache = null
+	_road_cache = null
+	_terrain_cache_world = null
+	_road_cache_world = null
+	queue_redraw()
+
 func _draw_terrain() -> void:
-	var grass_color: Color = Color(0.32, 0.58, 0.28)
-	var forest_color: Color = Color(0.16, 0.38, 0.18)
-	var rock_color: Color = Color(0.48, 0.50, 0.54)
-	var water_color: Color = Color(0.22, 0.45, 0.75)
-	var grid_line_color: Color = Color(0.0, 0.0, 0.0, 0.06)
-	
+	if _terrain_cache == null or _terrain_cache_world != world_state:
+		_rebuild_terrain_cache()
+	if _terrain_cache != null:
+		draw_texture_rect(
+			_terrain_cache,
+			Rect2(Vector2.ZERO, Vector2(world_state.width * TILE_SIZE, world_state.height * TILE_SIZE)),
+			false
+		)
+
+func _rebuild_terrain_cache() -> void:
+	var terrain_image: Image = Image.create(world_state.width * int(TILE_SIZE), world_state.height * int(TILE_SIZE), false, Image.FORMAT_RGBA8)
+	var tile_images: Dictionary = {
+		&"grass_a": TEX_GRASS_A.get_image(),
+		&"grass_b": TEX_GRASS_B.get_image(),
+		&"forest_a": TEX_FOREST_A.get_image(),
+		&"forest_b": TEX_FOREST_B.get_image(),
+		&"rock": TEX_ROCK.get_image(),
+		&"water": TEX_WATER.get_image()
+	}
 	for y in range(world_state.height):
 		for x in range(world_state.width):
 			var tile: WorldTile = world_state.get_tile(Vector2i(x, y))
 			if tile == null:
 				continue
-				
-			var rect: Rect2 = Rect2(float(x) * TILE_SIZE, float(y) * TILE_SIZE, TILE_SIZE, TILE_SIZE)
-			
+			var sprite_key: StringName = &"grass_a"
 			match tile.terrain_id:
 				&"water":
-					draw_rect(rect, water_color)
-					# Subtle wave highlight
-					draw_line(rect.position + Vector2(2, 6), rect.position + Vector2(8, 6), Color(0.4, 0.65, 0.9, 0.6), 1.0)
-					draw_line(rect.position + Vector2(6, 12), rect.position + Vector2(13, 12), Color(0.4, 0.65, 0.9, 0.6), 1.0)
+					sprite_key = &"water"
 				&"rock":
-					draw_rect(rect, rock_color)
-					# Rock boulders
-					draw_circle(rect.position + Vector2(8, 8), 5.0, Color(0.38, 0.40, 0.44))
-					draw_circle(rect.position + Vector2(12, 11), 3.0, Color(0.32, 0.34, 0.38))
+					sprite_key = &"rock"
 				&"forest":
-					draw_rect(rect, forest_color)
-					# Tree canopies
-					draw_circle(rect.position + Vector2(8, 8), 6.0, Color(0.12, 0.30, 0.14))
-					draw_circle(rect.position + Vector2(6, 6), 4.5, Color(0.18, 0.44, 0.20))
+					sprite_key = &"forest_a" if ((x + y + world_state.seed_val) % 2 == 0) else &"forest_b"
 				_:
-					# Grass meadow
-					draw_rect(rect, grass_color)
-					# Subtle fertility variation
-					if tile.fertility > 0.65:
-						draw_rect(Rect2(rect.position + Vector2(4, 4), Vector2(2, 2)), Color(0.38, 0.68, 0.32, 0.7))
-						
-			# Soft tile grid border
-			draw_rect(rect, grid_line_color, false, 0.5)
+					sprite_key = &"grass_a" if ((x * 3 + y + world_state.seed_val) % 3 != 0) else &"grass_b"
+			var sprite_image: Image = tile_images[sprite_key]
+			terrain_image.blit_rect(
+				sprite_image,
+				Rect2i(Vector2i.ZERO, sprite_image.get_size()),
+				Vector2i(x * int(TILE_SIZE), y * int(TILE_SIZE))
+			)
+	_terrain_cache = ImageTexture.create_from_image(terrain_image)
+	_terrain_cache_world = world_state
 
 func _draw_roads() -> void:
-	var road_color: Color = Color(0.70, 0.58, 0.40)
-	var road_border: Color = Color(0.50, 0.40, 0.26)
-	
+	if _road_cache == null or _road_cache_world != world_state:
+		_rebuild_road_cache()
+	if _road_cache != null:
+		draw_texture_rect(
+			_road_cache,
+			Rect2(Vector2.ZERO, Vector2(world_state.width * TILE_SIZE, world_state.height * TILE_SIZE)),
+			false
+		)
+
+func _rebuild_road_cache() -> void:
+	var road_image: Image = Image.create(world_state.width * int(TILE_SIZE), world_state.height * int(TILE_SIZE), false, Image.FORMAT_RGBA8)
+	road_image.fill(Color(0, 0, 0, 0))
+	var road_sprite: Image = TEX_ROAD.get_image()
+	var road_rect := Rect2i(Vector2i.ZERO, road_sprite.get_size())
 	for y in range(world_state.height):
 		for x in range(world_state.width):
 			var tile: WorldTile = world_state.get_tile(Vector2i(x, y))
 			if tile != null and tile.road_level > 0:
-				var rect: Rect2 = Rect2(float(x) * TILE_SIZE, float(y) * TILE_SIZE, TILE_SIZE, TILE_SIZE)
-				draw_rect(rect.grow(-1.0), road_color)
-				draw_rect(rect.grow(-1.0), road_border, false, 1.0)
+				road_image.blit_rect(road_sprite, road_rect, Vector2i(x * int(TILE_SIZE), y * int(TILE_SIZE)))
+	_road_cache = ImageTexture.create_from_image(road_image)
+	_road_cache_world = world_state
 
 func _draw_buildings() -> void:
 	var defs: Dictionary = BuildingCatalog.get_all_defs()
-	for b in buildings:
-		var def_data: Dictionary = defs.get(b.definition_id, {})
+	for building: BuildingState in buildings:
+		var def_data: Dictionary = defs.get(building.definition_id, {})
 		var footprint: Vector2i = def_data.get("footprint", Vector2i(2, 2))
-		var base_col: Color = def_data.get("color", Color.WHITE)
-		
-		var b_pos: Vector2 = Vector2(b.tile_origin.x * TILE_SIZE, b.tile_origin.y * TILE_SIZE)
+		var b_pos: Vector2 = Vector2(building.tile_origin.x * TILE_SIZE, building.tile_origin.y * TILE_SIZE)
 		var b_size: Vector2 = Vector2(footprint.x * TILE_SIZE, footprint.y * TILE_SIZE)
 		var b_rect: Rect2 = Rect2(b_pos, b_size)
-		
-		# Building base structure with shadow
-		draw_rect(Rect2(b_pos + Vector2(2, 2), b_size), Color(0, 0, 0, 0.3)) # Shadow
-		draw_rect(b_rect, base_col)
-		draw_rect(b_rect, Color(0.15, 0.15, 0.18), false, 1.5) # Dark trim
-		
-		# Roof accent / Door
-		var door_w: float = 6.0
-		var door_h: float = 8.0
-		var door_pos: Vector2 = b_pos + Vector2(b_size.x * 0.5 - door_w * 0.5, b_size.y - door_h)
-		draw_rect(Rect2(door_pos, Vector2(door_w, door_h)), Color(0.2, 0.15, 0.1))
-		
-		# Building Name Abbreviation
-		var abbrev: String = str(b.definition_id).substr(0, 4).to_upper()
-		draw_string(ThemeDB.fallback_font, b_pos + Vector2(4, 12), abbrev, HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color.WHITE)
-		
-		# Selection glow
-		if b == selected_building:
-			draw_rect(b_rect.grow(3.0), Color(1.0, 0.85, 0.2), false, 2.5)
-			
-		# Status indicator badge
-		if b.current_block_reason != &"":
-			var warn_pos: Vector2 = b_pos + Vector2(b_size.x - 6.0, 6.0)
-			draw_circle(warn_pos, 4.5, Color.RED)
-			draw_circle(warn_pos, 4.5, Color.WHITE, false, 1.0)
-		elif b.assigned_workers > 0 and def_data.has("recipe"):
-			var active_pos: Vector2 = b_pos + Vector2(b_size.x - 6.0, 6.0)
-			draw_circle(active_pos, 3.5, Color(0.2, 0.9, 0.3))
+		var texture: Texture2D = _building_texture(building.definition_id)
+		if texture != null:
+			draw_texture_rect(texture, b_rect, false)
+		else:
+			# Safe fallback for future building definitions without a sprite yet.
+			var base_col: Color = def_data.get("color", Color.WHITE)
+			draw_rect(Rect2(b_pos + Vector2(2, 2), b_size), Color(0, 0, 0, 0.3))
+			draw_rect(b_rect, base_col)
+			draw_rect(b_rect, Color(0.15, 0.15, 0.18), false, 1.0)
+
+		if building == selected_building:
+			draw_rect(b_rect.grow(2.0), Color(1.0, 0.82, 0.28), false, 1.0)
+		if building.current_block_reason != &"":
+			draw_rect(Rect2(b_pos + Vector2(b_size.x - 6.0, 2.0), Vector2(4, 4)), Color("#f06c5e"))
+		elif building.assigned_workers > 0 and def_data.has("recipe"):
+			draw_rect(Rect2(b_pos + Vector2(b_size.x - 6.0, 2.0), Vector2(3, 3)), Color("#b8e078"))
+		if building.health < building.max_health:
+			draw_rect(Rect2(b_pos + Vector2(2, -3), Vector2(b_size.x - 4, 2)), Color("#2b2925"))
+			draw_rect(Rect2(b_pos + Vector2(2, -3), Vector2((b_size.x - 4) * float(building.health) / maxf(1.0, float(building.max_health)), 2)), Color("#bc5949"))
+
+func _building_texture(building_id: StringName) -> Texture2D:
+	match building_id:
+		&"town_hall": return TEX_TOWN_HALL
+		&"house": return TEX_HOUSE
+		&"farm": return TEX_FARM
+		&"woodcutter": return TEX_WOODCUTTER
+		&"quarry": return TEX_QUARRY
+		&"bakery": return TEX_BAKERY
+		&"storehouse": return TEX_STOREHOUSE
+		&"barracks": return TEX_BARRACKS
+		_: return null
 
 func _draw_build_ghost() -> void:
 	var defs: Dictionary = BuildingCatalog.get_all_defs()
@@ -158,65 +221,33 @@ func _draw_build_ghost() -> void:
 			draw_rect(Rect2(sub_pos, Vector2(TILE_SIZE, TILE_SIZE)), outline_color, false, 0.8)
 
 func _draw_citizens() -> void:
-	for c in citizens:
-		var c_pos: Vector2 = Vector2(c.position_tile.x * TILE_SIZE + TILE_SIZE * 0.5, c.position_tile.y * TILE_SIZE + TILE_SIZE * 0.5)
-		
-		# Shadow
-		draw_circle(c_pos + Vector2(0, 2), 4.0, Color(0, 0, 0, 0.35))
-		
-		# Citizen Body
-		var col: Color = Color(0.85, 0.85, 0.9)
-		if c.role_id == &"hauler":
-			col = Color(0.95, 0.75, 0.15) # Gold hauler
-		elif c.role_id == &"farmer":
-			col = Color(0.4, 0.8, 0.3)
-		elif c.food_state == CitizenState.FoodState.HUNGRY:
-			col = Color.ORANGE
-		elif c.food_state == CitizenState.FoodState.AT_RISK:
-			col = Color.RED
-			
-		draw_circle(c_pos, 4.0, col)
-		draw_circle(c_pos, 4.0, Color(0.15, 0.15, 0.15), false, 1.0)
-		
-		# Carried Goods Crate
-		if c.carried_amount > 0:
-			var crate_rect: Rect2 = Rect2(c_pos + Vector2(2, -6), Vector2(6, 6))
-			draw_rect(crate_rect, Color(0.85, 0.65, 0.2))
-			draw_rect(crate_rect, Color.BLACK, false, 1.0)
+	for citizen: CitizenState in citizens:
+		var c_pos: Vector2 = Vector2(citizen.position_tile.x * TILE_SIZE + TILE_SIZE * 0.5, citizen.position_tile.y * TILE_SIZE + TILE_SIZE * 0.5)
+		var texture: Texture2D = TEX_CITIZEN
+		if citizen.role_id == &"hauler":
+			texture = TEX_HAULER
+		elif citizen.role_id == &"farmer":
+			texture = TEX_FARMER
+		draw_texture_rect(texture, Rect2(c_pos - Vector2(6, 8), Vector2(12, 16)), false)
+		if citizen.carried_amount > 0:
+			draw_rect(Rect2(c_pos + Vector2(2, -7), Vector2(5, 5)), Color("#b58a4e"))
+			draw_rect(Rect2(c_pos + Vector2(3, -6), Vector2(3, 3)), Color("#dfbd79"))
 
 func _draw_military_units() -> void:
-	var defs: Dictionary = UnitDef.get_all_defs()
-	for u in military_units:
-		if u.is_dead:
+	for unit: MilitaryUnitState in military_units:
+		if unit.is_dead:
 			continue
-			
-		var def: UnitDef = defs.get(u.unit_definition_id, null)
-		var col: Color = def.unit_color if def != null else Color.WHITE
-		
-		# Shadow
-		draw_circle(u.position + Vector2(0, 3), 6.0, Color(0, 0, 0, 0.4))
-		
-		# Unit circle
-		draw_circle(u.position, 6.5, col)
-		draw_circle(u.position, 6.5, Color.BLACK, false, 1.5)
-		
-		# Starving indicator (cross)
-		if u.is_starving:
-			draw_circle(u.position, 3.0, Color.ORANGE_RED)
-			
-		# Selection ring
-		if u in selected_units:
-			draw_circle(u.position, 10.0, Color(1.0, 0.9, 0.2), false, 2.0)
-			
-		# Health bar
-		if u.health < u.max_health:
-			var bar_w: float = 16.0
-			var bar_h: float = 3.5
-			var bar_pos: Vector2 = u.position + Vector2(-bar_w * 0.5, -13.0)
-			var health_ratio: float = clampf(float(u.health) / float(u.max_health), 0.0, 1.0)
-			
-			draw_rect(Rect2(bar_pos, Vector2(bar_w, bar_h)), Color(0.2, 0.2, 0.2))
-			draw_rect(Rect2(bar_pos, Vector2(bar_w * health_ratio, bar_h)), Color(0.2, 0.9, 0.2))
+		var texture: Texture2D = TEX_RAIDER
+		if unit.faction_id == 0:
+			texture = TEX_ARCHER if unit.unit_definition_id == &"archer" else TEX_SPEARMAN
+		draw_texture_rect(texture, Rect2(unit.position - Vector2(7, 8), Vector2(14, 16)), false)
+		if unit in selected_units:
+			draw_rect(Rect2(unit.position - Vector2(9, 10), Vector2(18, 20)), Color("#f4d36c"), false, 1.0)
+		if unit.health < unit.max_health:
+			var bar_pos: Vector2 = unit.position + Vector2(-8, -12)
+			var ratio: float = clampf(float(unit.health) / maxf(1.0, float(unit.max_health)), 0.0, 1.0)
+			draw_rect(Rect2(bar_pos, Vector2(16, 3)), Color("#2a2721"))
+			draw_rect(Rect2(bar_pos, Vector2(16 * ratio, 3)), Color("#b9d879" if not unit.is_starving else "#dc8a56"))
 
 func _draw_logistics_overlay() -> void:
 	for job in active_jobs:

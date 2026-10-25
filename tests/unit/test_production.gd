@@ -3,6 +3,7 @@ extends SceneTree
 func _init() -> void:
 	print("--- Running TestProduction ---")
 	test_farm_production()
+	test_production_waits_for_worker_arrival()
 	test_bakery_production_and_blocks()
 	print("--- TestProduction PASSED ---\n")
 	quit(0)
@@ -47,6 +48,23 @@ func test_farm_production() -> void:
 	assert_eq(farm.production_progress, 0)
 	assert_eq(farm.inventory.get_quantity(&"grain"), 2)
 	assert_eq(farm.inventory.get_reserved_in(&"grain"), 0)
+
+
+func test_production_waits_for_worker_arrival() -> void:
+	var prod_sys: ProductionSystem = ProductionSystem.new()
+	var farm: BuildingState = BuildingState.new(4, &"farm", 20, [&"grain"])
+	var recipe_grain: RecipeDef = RecipeDef.new(&"grow_grain", {}, {&"grain": 2}, 1, 2)
+	farm.assigned_workers = 1
+
+	# A worker assigned on paper must not make production advance until physically present.
+	prod_sys.tick_building(farm, recipe_grain, null, 0)
+	assert_eq(farm.current_block_reason, &"NO_WORKERS", "No worker has reached the worksite")
+	assert_eq(farm.production_progress, 0, "Production must not advance before worker arrival")
+	assert_eq(farm.inventory.get_reserved_in(&"grain"), 0, "No output capacity should be reserved before arrival")
+
+	prod_sys.tick_building(farm, recipe_grain, null, 1)
+	assert_eq(farm.current_block_reason, &"", "Production should start once a worker is present")
+	assert_eq(farm.production_progress, 1, "Production should advance once worker is present")
 
 func test_bakery_production_and_blocks() -> void:
 	var prod_sys: ProductionSystem = ProductionSystem.new()
