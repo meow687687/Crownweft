@@ -12,6 +12,8 @@ var logistics: LogisticsSystem = null
 var production: ProductionSystem = null
 var needs: NeedsSystem = null
 var combat: CombatSystem = null
+var economy: EconomyState = null
+var economy_system: EconomySystem = null
 
 var buildings: Array[BuildingState] = []
 var citizens: Array[CitizenState] = []
@@ -45,6 +47,8 @@ func _init_simulation() -> void:
 	production = ProductionSystem.new()
 	needs = NeedsSystem.new()
 	combat = CombatSystem.new()
+	economy = EconomyState.new()
+	economy_system = EconomySystem.new()
 	
 	combat.raid_announced.connect(func(seconds_left: float):
 		ui.show_raid_warning(seconds_left)
@@ -106,6 +110,9 @@ func _setup_signals() -> void:
 			ui.show_building_details(selected_building, defs.get(selected_building.definition_id, {}))
 	)
 	ui.recruit_unit_requested.connect(_on_recruit_unit_requested)
+	ui.tax_level_cycled.connect(_on_tax_level_cycled)
+	ui.save_game_requested.connect(_on_save_game)
+	ui.load_game_requested.connect(_on_load_game)
 
 func _process(delta: float) -> void:
 	if sim_speed_multiplier > 0.0:
@@ -310,6 +317,17 @@ func _simulation_tick() -> void:
 	if current_tick % 24 == 0:
 		combat.apply_military_upkeep(military_units, food_inventories)
 	
+	# Economy & Taxation
+	var main_inv: Inventory = buildings[0].inventory if not buildings.is_empty() else null
+	economy_system.tick_economy(
+		economy,
+		citizens.size(),
+		needs_report.get("hungry", 0),
+		needs_report.get("at_risk", 0),
+		main_inv,
+		current_tick
+	)
+	
 	# 3. Logistics demand creation
 	_generate_logistics_demand()
 	
@@ -364,7 +382,73 @@ func _update_ui_state(needs_report: Dictionary) -> void:
 		
 	ui.update_resources(total_coin, total_bread, total_grain, total_timber, total_stone)
 	ui.update_population(citizens.size(), needs_report.get("fed", 0), needs_report.get("hungry", 0), needs_report.get("at_risk", 0))
+	if economy != null:
+		ui.update_economy(economy.get_tax_level_name(), economy.approval)
 	
 	if selected_building != null:
 		var defs: Dictionary = BuildingCatalog.get_all_defs()
 		ui.show_building_details(selected_building, defs.get(selected_building.definition_id, {}))
+
+func _on_tax_level_cycled() -> void:
+	if economy == null:
+		return
+	match economy.tax_level:
+		EconomyState.TaxLevel.LOW:
+			economy.tax_level = EconomyState.TaxLevel.NORMAL
+		EconomyState.TaxLevel.NORMAL:
+			economy.tax_level = EconomyState.TaxLevel.HIGH
+		EconomyState.TaxLevel.HIGH:
+			economy.tax_level = EconomyState.TaxLevel.LOW
+	ui.update_economy(economy.get_tax_level_name(), economy.approval)
+
+func _on_save_game() -> void:
+	var success: bool = SaveService.save_game_to_file(
+		world_state,
+		economy,
+		buildings,
+		citizens,
+		military_units,
+		job_board,
+		current_tick,
+		sim_speed_multiplier
+	)
+	print("Save game result: ", "SUCCESS" if success else "FAILED")
+
+func _on_load_game() -> void:
+	var loaded: Dictionary = SaveService.load_game_from_file()
+	if loaded.is_empty():
+		print("Load game failed or no save found.")
+		return
+		
+	# Reconstruct state from save
+	economy = loaded["economy"]
+	buildings = loaded["buildings"]
+	citizens = loaded["citizens"]
+	military_units = loaded["military_units"]
+	job_board = loaded["job_board"]
+	logistics.job_board = job_board
+	
+	current_tick = loaded["meta"].get("current_tick", 0)
+	sim_speed_multiplier = loaded["meta"].get("sim_speed", 1.0)
+	
+	# Update pathfinder solids for loaded buildings
+	pathfinding.initialize_from_world(world_state)
+	var defs: Dictionary = BuildingCatalog.get_all_defs()
+	for b in buildings:
+		var footprint: Vector2i = defs.get(b.definition_id, {}).get("footprint", Vector2i(2, 2))
+		for dy in range(footprint.y):
+			for dx in range(footprint.x):
+				var c: Vector2i = b.tile_origin + Vector2i(dx, dy)
+				pathfinding.set_solid(c, true)
+				
+	# Re-link renderer
+	renderer.buildings = buildings
+	renderer.citizens = citizens
+	renderer.military_units = military_units
+	selected_building = null
+	selected_units.clear()
+	renderer.selected_building = null
+	renderer.selected_units = selected_units
+	renderer.queue_redraw()
+	ui.update_economy(economy.get_tax_level_name(), economy.approval)
+	print("Game successfully loaded at tick: ", current_tick)

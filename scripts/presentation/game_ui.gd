@@ -6,9 +6,14 @@ signal speed_changed(speed_multiplier: float)
 signal toggle_overlay_requested()
 signal worker_assignment_changed(delta: int)
 signal recruit_unit_requested(unit_def_id: StringName)
+signal tax_level_cycled()
+signal save_game_requested()
+signal load_game_requested()
 
 var label_resources: Label = null
 var label_population: Label = null
+var label_approval: Label = null
+var btn_tax: Button = null
 var label_speed: Label = null
 var label_raid_warning: Label = null
 var panel_inspector: PanelContainer = null
@@ -43,6 +48,16 @@ func _setup_ui() -> void:
 	label_population.text = "Pop: 10 | Fed: 10 | Hungry: 0"
 	top_box.add_child(label_population)
 	
+	# Approval and Tax
+	label_approval = Label.new()
+	label_approval.text = "Approval: 60%"
+	top_box.add_child(label_approval)
+	
+	btn_tax = Button.new()
+	btn_tax.text = "Tax: Normal"
+	btn_tax.pressed.connect(func(): tax_level_cycled.emit())
+	top_box.add_child(btn_tax)
+	
 	# Speed controls
 	var btn_pause: Button = Button.new()
 	btn_pause.text = "⏸ Pause"
@@ -68,6 +83,16 @@ func _setup_ui() -> void:
 	btn_overlay.text = "🔍 Overlay"
 	btn_overlay.pressed.connect(func(): toggle_overlay_requested.emit())
 	top_box.add_child(btn_overlay)
+	
+	var btn_save: Button = Button.new()
+	btn_save.text = "💾 Save"
+	btn_save.pressed.connect(func(): save_game_requested.emit())
+	top_box.add_child(btn_save)
+	
+	var btn_load: Button = Button.new()
+	btn_load.text = "📂 Load"
+	btn_load.pressed.connect(func(): load_game_requested.emit())
+	top_box.add_child(btn_load)
 	
 	# Raid Warning Banner
 	label_raid_warning = Label.new()
@@ -173,6 +198,12 @@ func update_resources(coin: int, bread: int, grain: int, timber: int, stone: int
 func update_population(total: int, fed: int, hungry: int, at_risk: int) -> void:
 	if label_population != null:
 		label_population.text = "Pop: %d | Fed: %d | Hungry: %d | At-Risk: %d" % [total, fed, hungry, at_risk]
+
+func update_economy(tax_name: String, approval_val: float) -> void:
+	if label_approval != null:
+		label_approval.text = "Approval: %d%%" % int(roundf(approval_val))
+	if btn_tax != null:
+		btn_tax.text = "Tax: %s" % tax_name
 
 func show_building_details(building: BuildingState, def_info: Dictionary) -> void:
 	if building == null:
