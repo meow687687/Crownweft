@@ -1,0 +1,18 @@
+[gd_scene format=3 uid="uid://b8worldscene001"]
+
+[ext_resource type="Script" path="res://scenes/world/world.gd" id="1_world"]
+[ext_resource type="Script" path="res://scripts/presentation/world_renderer.gd" id="2_renderer"]
+[ext_resource type="Script" path="res://scripts/presentation/rts_camera.gd" id="3_camera"]
+[ext_resource type="Script" path="res://scripts/presentation/game_ui.gd" id="4_game_ui"]
+
+[node name="World" type="Node2D"]
+script = ExtResource("1_world")
+
+[node name="WorldRenderer" type="Node2D" parent="."]
+script = ExtResource("2_renderer")
+
+[node name="RTSCamera" type="Camera2D" parent="."]
+script = ExtResource("3_camera")
+
+[node name="GameUI" type="CanvasLayer" parent="."]
+script = ExtResource("4_game_ui")

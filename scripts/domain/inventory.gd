@@ -12,10 +12,10 @@ var accepted_resources: Array[StringName] = [] # Empty means accepts any resourc
 
 var transaction_log: Array[Dictionary] = []
 
-func _init(p_owner_id: int = 0, p_capacity: int = 100, p_accepted: Array[StringName] = []) -> void:
+func _init(p_owner_id: int = 0, p_capacity: int = 100, p_accepted: Array = []) -> void:
 	owner_id = p_owner_id
 	capacity = p_capacity
-	accepted_resources = p_accepted.duplicate()
+	accepted_resources.assign(p_accepted)
 
 func accepts(resource_id: StringName) -> bool:
 	if accepted_resources.is_empty():
