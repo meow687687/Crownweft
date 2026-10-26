@@ -22,6 +22,9 @@ signal ceasefire_requested(war_id: int)
 signal peace_requested(war_id: int)
 signal toggle_world_map_panel_requested()
 signal region_selected(region_id: StringName)
+signal army_march_requested(army_id: int, dest_region_id: StringName)
+signal army_halt_requested(army_id: int)
+signal army_resupply_requested(army_id: int)
 
 # Top Bar Elements
 var label_coin: Label = null
@@ -2020,6 +2023,19 @@ func _on_map_canvas_draw() -> void:
 		var sel_reg: RegionState = regions[selected_region_id]
 		map_canvas.draw_arc(sel_reg.map_pos, 32.0, 0.0, TAU, 32, UITheme.COLOR_ACCENT_GOLD, 2.5)
 
+	# Draw active regional armies
+	var armies: Dictionary = _last_world_map_data.get("armies", {})
+	for a in armies.values():
+		if not a.is_active():
+			continue
+		var a_reg: RegionState = regions.get(a.current_region_id, null)
+		if a_reg != null:
+			var army_pos: Vector2 = a_reg.map_pos + Vector2(0, 30)
+			var a_col: Color = _get_faction_color(a.faction_id)
+			map_canvas.draw_circle(army_pos, 7.0, a_col)
+			map_canvas.draw_circle(army_pos, 5.0, Color.BLACK)
+			map_canvas.draw_circle(army_pos, 3.0, a_col)
+
 func _render_region_details(reg: RegionState) -> void:
 	for child in box_region_details.get_children():
 		child.queue_free()
@@ -2154,6 +2170,135 @@ func _render_region_details(reg: RegionState) -> void:
 		no_routes.add_theme_font_size_override("font_size", 9)
 		no_routes.add_theme_color_override("font_color", UITheme.COLOR_TEXT_MUTED)
 		box_region_details.add_child(no_routes)
+
+	# Regional Armies & Formations
+	box_region_details.add_child(HSeparator.new())
+	var army_header := Label.new()
+	army_header.text = "REGIONAL ARMIES & GARRISONS"
+	army_header.add_theme_font_size_override("font_size", 11)
+	army_header.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+	box_region_details.add_child(army_header)
+
+	var armies: Dictionary = _last_world_map_data.get("armies", {})
+	var found_armies: int = 0
+	for a in armies.values():
+		if not a.is_active():
+			continue
+		if a.current_region_id != reg.id:
+			continue
+		found_armies += 1
+
+		var army_card := PanelContainer.new()
+		var a_col: Color = _get_faction_color(a.faction_id)
+		army_card.add_theme_stylebox_override("panel", UITheme.create_panel_style(Color(0.12, 0.14, 0.18, 0.95), a_col, 1, 4))
+		box_region_details.add_child(army_card)
+
+		var card_vbox := VBoxContainer.new()
+		card_vbox.add_theme_constant_override("separation", 3)
+		army_card.add_child(card_vbox)
+
+		# Army Title & Faction
+		var a_title := Label.new()
+		a_title.text = "⚔ %s (%s)" % [a.name, _get_faction_display_name(a.faction_id)]
+		a_title.add_theme_font_size_override("font_size", 10)
+		a_title.add_theme_color_override("font_color", a_col)
+		card_vbox.add_child(a_title)
+
+		# Status Badge
+		var stat_col: Color = Color("#2ed573")
+		match a.status:
+			ArmyState.STATUS_MARCHING:
+				stat_col = Color("#eccc68")
+			ArmyState.STATUS_SUPPLY_STRAINED:
+				stat_col = Color("#ff4757")
+			ArmyState.STATUS_RETREATING:
+				stat_col = Color("#ffa502")
+			ArmyState.STATUS_ENGAGED:
+				stat_col = Color("#ff6348")
+		var a_stat := Label.new()
+		a_stat.text = "Status: %s" % str(a.status).replace("_", " ").to_upper()
+		a_stat.add_theme_font_size_override("font_size", 9)
+		a_stat.add_theme_color_override("font_color", stat_col)
+		card_vbox.add_child(a_stat)
+
+		# Movement info
+		if a.status in [ArmyState.STATUS_MARCHING, ArmyState.STATUS_SUPPLY_STRAINED] and not a.route_path.is_empty():
+			var dest_reg_info: RegionState = regions.get(a.destination_region_id, null)
+			var dest_name: String = dest_reg_info.display_name if dest_reg_info != null else str(a.destination_region_id)
+			var a_dest := Label.new()
+			a_dest.text = "Marching to: %s\nSegment: %.0f / %d ticks" % [dest_name, a.segment_ticks_progress, a.segment_total_ticks]
+			a_dest.add_theme_font_size_override("font_size", 9)
+			a_dest.add_theme_color_override("font_color", Color("#cbd5e1"))
+			card_vbox.add_child(a_dest)
+
+		# Strength & Roster
+		var roster_str: String = ""
+		for u_type in a.unit_roster:
+			roster_str += ("" if roster_str == "" else ", ") + "%d %s" % [a.unit_roster[u_type], str(u_type).capitalize()]
+		var a_strength := Label.new()
+		a_strength.text = "Strength: %d (%s)" % [a.strength, roster_str]
+		a_strength.add_theme_font_size_override("font_size", 9)
+		card_vbox.add_child(a_strength)
+
+		# Carried Supplies
+		var a_supp := Label.new()
+		var grain_val: float = a.get_supplies(&"grain")
+		a_supp.text = "Supplies Carried: %.1f / %d Grain" % [grain_val, a.max_supply_capacity]
+		a_supp.add_theme_font_size_override("font_size", 9)
+		a_supp.add_theme_color_override("font_color", Color("#ffa502") if grain_val < 10.0 else Color("#7bed9f"))
+		card_vbox.add_child(a_supp)
+
+		# Supply Line
+		var a_line := Label.new()
+		if a.supply_line_connected:
+			var base_reg: RegionState = regions.get(a.supply_source_region_id, null)
+			var base_name: String = base_reg.display_name if base_reg != null else str(a.supply_source_region_id)
+			a_line.text = "Supply Line: CONNECTED (Base: %s)" % base_name
+			a_line.add_theme_color_override("font_color", Color("#2ed573"))
+		else:
+			a_line.text = "Supply Line: SEVERED (No secure friendly path)"
+			a_line.add_theme_color_override("font_color", Color("#ff4757"))
+		a_line.add_theme_font_size_override("font_size", 9)
+		card_vbox.add_child(a_line)
+
+		# Player Controls
+		if a.faction_id == FactionCatalog.FACTION_PLAYER:
+			var btn_box := HBoxContainer.new()
+			btn_box.add_theme_constant_override("separation", 4)
+			card_vbox.add_child(btn_box)
+
+			var capture_aid: int = a.id
+			for n_id in reg.neighbors:
+				var n_reg: RegionState = regions.get(n_id, null)
+				if n_reg != null:
+					var btn_march := Button.new()
+					btn_march.text = "To %s" % n_reg.display_name.split(" ")[0]
+					btn_march.add_theme_font_size_override("font_size", 8)
+					UITheme.apply_button_style(btn_march)
+					var cap_nid: StringName = n_id
+					btn_march.pressed.connect(func(): army_march_requested.emit(capture_aid, cap_nid))
+					btn_box.add_child(btn_march)
+
+			var btn_halt := Button.new()
+			btn_halt.text = "Halt"
+			btn_halt.add_theme_font_size_override("font_size", 8)
+			UITheme.apply_button_style(btn_halt)
+			btn_halt.pressed.connect(func(): army_halt_requested.emit(capture_aid))
+			btn_box.add_child(btn_halt)
+
+			var btn_resupply := Button.new()
+			btn_resupply.text = "Resupply"
+			btn_resupply.add_theme_font_size_override("font_size", 8)
+			UITheme.apply_button_style(btn_resupply)
+			btn_resupply.pressed.connect(func(): army_resupply_requested.emit(capture_aid))
+			btn_box.add_child(btn_resupply)
+
+	if found_armies == 0:
+		var no_armies := Label.new()
+		no_armies.text = "No military formations stationed in this region."
+		no_armies.add_theme_font_size_override("font_size", 9)
+		no_armies.add_theme_color_override("font_color", UITheme.COLOR_TEXT_MUTED)
+		box_region_details.add_child(no_armies)
 
 	# Faction Relations / Active Wars
 	var diplomacy: DiplomacyState = _last_world_map_data.get("diplomacy", null)

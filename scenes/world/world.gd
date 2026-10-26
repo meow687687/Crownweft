@@ -70,6 +70,22 @@ func _init_simulation() -> void:
 	regional_world.regions = RegionCatalog.create_default_regions()
 	regional_world.routes = RegionCatalog.create_default_routes()
 	regional_world.selected_region_id = RegionCatalog.REGION_CROWNWEFT
+	regional_world.create_army(
+		FactionCatalog.FACTION_PLAYER,
+		"Royal Crown Guard",
+		RegionCatalog.REGION_CROWNWEFT,
+		{&"warrior": 12, &"archer": 6},
+		40,
+		0
+	)
+	regional_world.create_army(
+		FactionCatalog.FACTION_IRONPEAK,
+		"Ironpeak Vanguard",
+		RegionCatalog.REGION_IRONPEAK,
+		{&"warrior": 16, &"archer": 8},
+		30,
+		0
+	)
 	
 	combat.raid_announced.connect(func(seconds_left: float):
 		ui.show_raid_warning(seconds_left)
@@ -150,6 +166,9 @@ func _setup_signals() -> void:
 	ui.peace_requested.connect(_on_peace_requested)
 	ui.toggle_world_map_panel_requested.connect(_on_toggle_world_map_panel)
 	ui.region_selected.connect(_on_region_selected)
+	ui.army_march_requested.connect(_on_army_march_requested)
+	ui.army_halt_requested.connect(_on_army_halt_requested)
+	ui.army_resupply_requested.connect(_on_army_resupply_requested)
 	combat.unit_died.connect(_on_unit_died)
 	ui.save_game_requested.connect(_on_save_game)
 	ui.load_game_requested.connect(_on_load_game)
@@ -959,6 +978,8 @@ func _simulation_tick() -> void:
 	# Faction diplomacy decisions and relationship tracking
 	diplomacy_system.tick_diplomacy(diplomacy, current_tick, main_inv, economy, government)
 	_tick_active_wars()
+	if regional_world != null:
+		regional_world.tick_regional_armies(current_tick, diplomacy)
 
 	# Periodic check for social status advancement
 	if current_tick % 20 == 0:
@@ -1567,11 +1588,53 @@ func _update_world_map_ui() -> void:
 		"regional_world": regional_world,
 		"regions": regional_world.regions,
 		"routes": regional_world.routes,
+		"armies": regional_world.armies,
 		"selected_region_id": regional_world.selected_region_id,
 		"diplomacy": diplomacy,
 		"active_wars": diplomacy.active_wars if diplomacy != null else []
 	}
 	ui.update_world_map(payload)
+
+func _on_army_march_requested(army_id: int, dest_region_id: StringName) -> void:
+	if regional_world == null:
+		return
+	var res: Dictionary = regional_world.issue_march_order(army_id, dest_region_id, current_tick, diplomacy)
+	if res.get("ok", false):
+		ui.show_toast("Army dispatched towards %s." % str(dest_region_id), false)
+		_update_world_map_ui()
+	else:
+		ui.show_toast(res.get("reason", "Cannot issue march order"), true)
+
+func _on_army_halt_requested(army_id: int) -> void:
+	if regional_world == null:
+		return
+	var res: Dictionary = regional_world.halt_army(army_id, "Order to hold position", current_tick)
+	if res.get("ok", false):
+		ui.show_toast("Army holding position.", false)
+		_update_world_map_ui()
+
+func _on_army_resupply_requested(army_id: int) -> void:
+	if regional_world == null:
+		return
+	var army: ArmyState = regional_world.get_army(army_id)
+	if army == null:
+		return
+	var res: Dictionary = {}
+	if army.current_region_id == RegionCatalog.REGION_CROWNWEFT and not buildings.is_empty():
+		res = regional_world.resupply_army(army_id, "local_inventory", buildings[0].inventory, 25, current_tick)
+	else:
+		var reg: RegionState = regional_world.get_region(army.current_region_id)
+		res = regional_world.resupply_army(army_id, "regional_stockpile", reg, 25, current_tick)
+
+	if res.get("ok", false):
+		var trans: int = int(res.get("transferred", 0))
+		if trans > 0:
+			ui.show_toast("Transferred %d Grain to %s." % [trans, army.name], false)
+		else:
+			ui.show_toast("No supplies available or army capacity full.", true)
+		_update_world_map_ui()
+	else:
+		ui.show_toast(res.get("reason", "Resupply failed"), true)
 
 func _on_save_game() -> void:
 	var success: bool = SaveService.save_game_to_file(
