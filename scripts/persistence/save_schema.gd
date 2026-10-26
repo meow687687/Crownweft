@@ -15,7 +15,8 @@ static func serialize(
 	sim_speed: float,
 	auto_staffing_enabled: bool = false,
 	government: GovernmentState = null,
-	diplomacy: DiplomacyState = null
+	diplomacy: DiplomacyState = null,
+	regional_world: RegionalWorldState = null
 ) -> Dictionary:
 	var gov_dict: Dictionary = {
 		"enacted_policies": {},
@@ -40,6 +41,7 @@ static func serialize(
 		},
 		"government": gov_dict,
 		"diplomacy": diplomacy.serialize() if diplomacy != null else DiplomacyState.new().serialize(),
+		"regional_world": regional_world.serialize() if regional_world != null else RegionalWorldState.new().serialize(),
 		"economy": {
 			"tax_level": economy.tax_level if economy != null else 1,
 			"approval": economy.approval if economy != null else 60.0,
@@ -418,5 +420,14 @@ static func deserialize(data: Dictionary) -> Dictionary:
 	if data.has("diplomacy") and data["diplomacy"] is Dictionary:
 		dip_state = DiplomacyState.deserialize(data["diplomacy"])
 	result["diplomacy"] = dip_state
+
+	# Deserialize regional world
+	var reg_state := RegionalWorldState.new()
+	if data.has("regional_world") and data["regional_world"] is Dictionary:
+		reg_state = RegionalWorldState.deserialize(data["regional_world"])
+	else:
+		reg_state.regions = RegionCatalog.create_default_regions()
+		reg_state.routes = RegionCatalog.create_default_routes()
+	result["regional_world"] = reg_state
 		
 	return result

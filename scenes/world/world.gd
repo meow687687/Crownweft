@@ -20,6 +20,7 @@ var economy_system: EconomySystem = EconomySystem.new()
 var government: GovernmentState = GovernmentState.new()
 var diplomacy: DiplomacyState = DiplomacyState.new()
 var diplomacy_system: DiplomacySystem = DiplomacySystem.new()
+var regional_world: RegionalWorldState = null
 
 var buildings: Array[BuildingState] = []
 var citizens: Array[CitizenState] = []
@@ -65,6 +66,10 @@ func _init_simulation() -> void:
 	government = GovernmentState.new()
 	diplomacy = DiplomacyState.new()
 	diplomacy_system = DiplomacySystem.new()
+	regional_world = RegionalWorldState.new()
+	regional_world.regions = RegionCatalog.create_default_regions()
+	regional_world.routes = RegionCatalog.create_default_routes()
+	regional_world.selected_region_id = RegionCatalog.REGION_CROWNWEFT
 	
 	combat.raid_announced.connect(func(seconds_left: float):
 		ui.show_raid_warning(seconds_left)
@@ -143,6 +148,8 @@ func _setup_signals() -> void:
 	ui.proposal_response_requested.connect(_on_proposal_response)
 	ui.ceasefire_requested.connect(_on_ceasefire_requested)
 	ui.peace_requested.connect(_on_peace_requested)
+	ui.toggle_world_map_panel_requested.connect(_on_toggle_world_map_panel)
+	ui.region_selected.connect(_on_region_selected)
 	combat.unit_died.connect(_on_unit_died)
 	ui.save_game_requested.connect(_on_save_game)
 	ui.load_game_requested.connect(_on_load_game)
@@ -301,6 +308,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			return
 		elif kb_event.keycode == KEY_D and active_build_id == &"":
 			_on_toggle_diplomacy_panel()
+			get_viewport().set_input_as_handled()
+			return
+		elif kb_event.keycode == KEY_M and active_build_id == &"":
+			_on_toggle_world_map_panel()
 			get_viewport().set_input_as_handled()
 			return
 
@@ -980,6 +991,8 @@ func _simulation_tick() -> void:
 		_update_government_ui()
 	if ui != null and ui.is_diplomacy_panel_visible():
 		_update_diplomacy_ui()
+	if ui != null and ui.is_world_map_visible():
+		_update_world_map_ui()
 	renderer.queue_redraw()
 
 func _update_worker_movement() -> void:
@@ -1535,6 +1548,31 @@ func _on_peace_requested(war_id: int) -> void:
 		if ui != null:
 			ui.show_toast(res.get("reason", "Cannot conclude peace treaty"), true)
 
+func _on_toggle_world_map_panel() -> void:
+	if ui == null or regional_world == null:
+		return
+	ui.toggle_world_map_panel()
+	if ui.is_world_map_visible():
+		_update_world_map_ui()
+
+func _on_region_selected(region_id: StringName) -> void:
+	if regional_world != null:
+		regional_world.selected_region_id = region_id
+		_update_world_map_ui()
+
+func _update_world_map_ui() -> void:
+	if ui == null or regional_world == null:
+		return
+	var payload: Dictionary = {
+		"regional_world": regional_world,
+		"regions": regional_world.regions,
+		"routes": regional_world.routes,
+		"selected_region_id": regional_world.selected_region_id,
+		"diplomacy": diplomacy,
+		"active_wars": diplomacy.active_wars if diplomacy != null else []
+	}
+	ui.update_world_map(payload)
+
 func _on_save_game() -> void:
 	var success: bool = SaveService.save_game_to_file(
 		world_state,
@@ -1548,7 +1586,8 @@ func _on_save_game() -> void:
 		SaveService.DEFAULT_SAVE_PATH,
 		auto_staffing_enabled,
 		government,
-		diplomacy
+		diplomacy,
+		regional_world
 	)
 	if success:
 		ui.show_toast("Realm state saved successfully", false)
@@ -1568,6 +1607,10 @@ func _on_load_game() -> void:
 	economy = loaded["economy"]
 	government = loaded.get("government", GovernmentState.new())
 	diplomacy = loaded.get("diplomacy", DiplomacyState.new())
+	regional_world = loaded.get("regional_world", RegionalWorldState.new())
+	if regional_world.regions.is_empty():
+		regional_world.regions = RegionCatalog.create_default_regions()
+		regional_world.routes = RegionCatalog.create_default_routes()
 	buildings = loaded["buildings"]
 	citizens = loaded["citizens"]
 	military_units = loaded["military_units"]

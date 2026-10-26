@@ -20,6 +20,8 @@ signal toggle_diplomacy_panel_requested()
 signal proposal_response_requested(proposal_id: int, accept: bool)
 signal ceasefire_requested(war_id: int)
 signal peace_requested(war_id: int)
+signal toggle_world_map_panel_requested()
+signal region_selected(region_id: StringName)
 
 # Top Bar Elements
 var label_coin: Label = null
@@ -102,6 +104,15 @@ var box_diplomacy_details: VBoxContainer = null
 var selected_diplomacy_faction_id: StringName = FactionCatalog.FACTION_VALEN
 var _last_diplomacy_data: Dictionary = {}
 
+# Strategic World Map Panel
+var btn_world_map: Button = null
+var panel_world_map: PanelContainer = null
+var map_canvas: Control = null
+var map_node_container: Control = null
+var box_region_details: VBoxContainer = null
+var selected_region_id: StringName = RegionCatalog.REGION_CROWNWEFT
+var _last_world_map_data: Dictionary = {}
+
 func _ready() -> void:
 	_build_ui_layout()
 
@@ -180,6 +191,7 @@ func _build_ui_layout() -> void:
 	btn_workforce = _create_ctrl_button(ctrl_box, "WORKFORCE", func(): toggle_workforce_panel_requested.emit())
 	btn_government = _create_ctrl_button(ctrl_box, "LAWS", func(): toggle_government_panel_requested.emit())
 	btn_diplomacy = _create_ctrl_button(ctrl_box, "DIPLOMACY", func(): toggle_diplomacy_panel_requested.emit())
+	btn_world_map = _create_ctrl_button(ctrl_box, "WORLD MAP", func(): toggle_world_map_panel_requested.emit())
 	_create_ctrl_button(ctrl_box, "SAVE", func(): save_game_requested.emit())
 	_create_ctrl_button(ctrl_box, "LOAD", func(): load_game_requested.emit())
 
@@ -385,6 +397,7 @@ func _build_ui_layout() -> void:
 	_build_workforce_panel()
 	_build_government_panel()
 	_build_diplomacy_panel()
+	_build_world_map_panel()
 
 func _create_badge(parent: Node, title: String, val: String, col: Color) -> Label:
 	var lbl := Label.new()
@@ -1789,5 +1802,400 @@ func _add_rel_stat_row(grid: GridContainer, label_text: String, val_text: String
 	v.add_theme_font_size_override("font_size", 10)
 	v.add_theme_color_override("font_color", col)
 	grid.add_child(v)
+
+# =========================================================================
+# STRATEGIC REGIONAL WORLD MAP & TERRITORIAL CONTROL
+# =========================================================================
+
+func _build_world_map_panel() -> void:
+	panel_world_map = PanelContainer.new()
+	panel_world_map.set_anchors_preset(Control.PRESET_CENTER)
+	panel_world_map.offset_left = -440
+	panel_world_map.offset_top = -280
+	panel_world_map.offset_right = 440
+	panel_world_map.offset_bottom = 280
+	panel_world_map.add_theme_stylebox_override("panel", UITheme.create_panel_style(UITheme.COLOR_BG_PANEL, UITheme.COLOR_BORDER_GOLD, 2, 6))
+	panel_world_map.visible = false
+	panel_world_map.mouse_filter = Control.MOUSE_FILTER_STOP
+	add_child(panel_world_map)
+
+	var main_vbox := VBoxContainer.new()
+	main_vbox.add_theme_constant_override("separation", 8)
+	panel_world_map.add_child(main_vbox)
+
+	var header := HBoxContainer.new()
+	header.add_theme_constant_override("separation", 10)
+	main_vbox.add_child(header)
+
+	var lbl_title := Label.new()
+	lbl_title.text = "STRATEGIC REGIONAL WORLD MAP"
+	lbl_title.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+	lbl_title.add_theme_font_size_override("font_size", 14)
+	lbl_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(lbl_title)
+
+	var btn_close := Button.new()
+	btn_close.text = "X"
+	btn_close.custom_minimum_size = Vector2(28, 24)
+	UITheme.apply_button_style(btn_close)
+	btn_close.pressed.connect(func(): panel_world_map.visible = false)
+	header.add_child(btn_close)
+
+	main_vbox.add_child(HSeparator.new())
+
+	var body_hbox := HBoxContainer.new()
+	body_hbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	body_hbox.add_theme_constant_override("separation", 12)
+	main_vbox.add_child(body_hbox)
+
+	# Left side: Strategic Map Area (560 x 480)
+	var map_panel := PanelContainer.new()
+	map_panel.custom_minimum_size = Vector2(560, 480)
+	map_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	map_panel.add_theme_stylebox_override("panel", UITheme.create_panel_style(Color(0.08, 0.10, 0.14, 0.98), Color(0.30, 0.35, 0.45), 1, 4))
+	map_panel.clip_contents = true
+	body_hbox.add_child(map_panel)
+
+	# Canvas for drawing routes & connections
+	map_canvas = Control.new()
+	map_canvas.custom_minimum_size = Vector2(560, 480)
+	map_canvas.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	map_canvas.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	map_panel.add_child(map_canvas)
+	map_canvas.draw.connect(_on_map_canvas_draw)
+
+	# Interactive node container
+	map_node_container = Control.new()
+	map_node_container.set_anchors_preset(Control.PRESET_FULL_RECT)
+	map_panel.add_child(map_node_container)
+
+	# Right side: Region Inspector
+	var right_scroll := ScrollContainer.new()
+	right_scroll.custom_minimum_size = Vector2(280, 480)
+	right_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	body_hbox.add_child(right_scroll)
+
+	box_region_details = VBoxContainer.new()
+	box_region_details.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box_region_details.add_theme_constant_override("separation", 8)
+	right_scroll.add_child(box_region_details)
+
+func toggle_world_map_panel() -> void:
+	if panel_world_map != null:
+		panel_world_map.visible = not panel_world_map.visible
+		if panel_world_map.visible:
+			if panel_workforce != null:
+				panel_workforce.visible = false
+			if panel_government != null:
+				panel_government.visible = false
+			if panel_diplomacy != null:
+				panel_diplomacy.visible = false
+			_refresh_world_map()
+
+func is_world_map_visible() -> bool:
+	return panel_world_map != null and panel_world_map.visible
+
+func update_world_map(map_data: Dictionary) -> void:
+	_last_world_map_data = map_data
+	if map_data.has("selected_region_id"):
+		selected_region_id = StringName(map_data["selected_region_id"])
+	if is_world_map_visible():
+		_refresh_world_map()
+
+func _refresh_world_map() -> void:
+	if map_node_container == null or box_region_details == null:
+		return
+
+	# Clear previous interactive nodes
+	for child in map_node_container.get_children():
+		child.queue_free()
+
+	var regions: Dictionary = _last_world_map_data.get("regions", {})
+	if regions.is_empty():
+		return
+
+	if not regions.has(selected_region_id) and not regions.is_empty():
+		selected_region_id = regions.keys()[0]
+
+	for r_id in regions:
+		var reg: RegionState = regions[r_id]
+		var btn := Button.new()
+		var is_selected: bool = (reg.id == selected_region_id)
+		
+		var status_tag: String = "Controlled"
+		if reg.id == RegionCatalog.REGION_CROWNWEFT:
+			status_tag = "Crown Capital"
+		elif reg.is_contested:
+			status_tag = "Contested Pass"
+		elif reg.occupying_faction != &"":
+			status_tag = "Occupied"
+		elif reg.controlling_faction == &"":
+			status_tag = "Unclaimed"
+		elif reg.has_settlement():
+			status_tag = reg.settlement_name
+
+		btn.text = "%s\n[%s]" % [reg.display_name, status_tag]
+		btn.custom_minimum_size = Vector2(120, 46)
+		btn.position = Vector2(reg.map_pos.x - 60, reg.map_pos.y - 23)
+		btn.add_theme_font_size_override("font_size", 10)
+
+		# Faction color border
+		var border_col: Color = _get_faction_color(reg.controlling_faction)
+		if reg.is_contested:
+			border_col = Color(0.95, 0.35, 0.25)
+		elif reg.controlling_faction == &"":
+			border_col = Color(0.60, 0.65, 0.70)
+
+		var bg_col: Color = Color(0.12, 0.15, 0.22, 0.95) if is_selected else Color(0.08, 0.10, 0.14, 0.90)
+		var border_w: int = 3 if is_selected else 2
+		btn.add_theme_stylebox_override("normal", UITheme.create_panel_style(bg_col, border_col, border_w, 4))
+		btn.add_theme_stylebox_override("hover", UITheme.create_panel_style(bg_col.lightened(0.1), UITheme.COLOR_ACCENT_GOLD, border_w, 4))
+		btn.add_theme_stylebox_override("pressed", UITheme.create_panel_style(bg_col.darkened(0.1), border_col, border_w, 4))
+
+		var capture_id: StringName = reg.id
+		btn.pressed.connect(func():
+			selected_region_id = capture_id
+			region_selected.emit(capture_id)
+			_refresh_world_map()
+		)
+		map_node_container.add_child(btn)
+
+	# Trigger canvas redraw for routes
+	if map_canvas != null:
+		map_canvas.queue_redraw()
+
+	# Rebuild inspector details
+	var selected_reg: RegionState = regions.get(selected_region_id, null)
+	if selected_reg != null:
+		_render_region_details(selected_reg)
+
+func _on_map_canvas_draw() -> void:
+	if map_canvas == null:
+		return
+
+	# Draw subtle strategic grid lines
+	for x in range(40, 560, 60):
+		map_canvas.draw_line(Vector2(x, 0), Vector2(x, 480), Color(0.2, 0.25, 0.32, 0.15), 1.0)
+	for y in range(40, 480, 60):
+		map_canvas.draw_line(Vector2(0, y), Vector2(560, y), Color(0.2, 0.25, 0.32, 0.15), 1.0)
+
+	var regions: Dictionary = _last_world_map_data.get("regions", {})
+	var routes: Array = _last_world_map_data.get("routes", [])
+
+	# Draw routes connecting regions
+	for r in routes:
+		var reg_a: RegionState = regions.get(r.region_a, null)
+		var reg_b: RegionState = regions.get(r.region_b, null)
+		if reg_a == null or reg_b == null:
+			continue
+
+		var pos_a: Vector2 = reg_a.map_pos
+		var pos_b: Vector2 = reg_b.map_pos
+
+		var route_col: Color = Color(0.85, 0.75, 0.45, 0.75) # Default road
+		var line_w: float = 2.5
+		if not r.is_open:
+			route_col = Color(0.85, 0.25, 0.25, 0.85) # Blocked / Closed
+			line_w = 2.0
+		else:
+			match r.traversal_constraint:
+				RegionRoute.CONSTRAINT_PAVED_ROAD:
+					route_col = Color(0.95, 0.85, 0.45, 0.85)
+					line_w = 3.0
+				RegionRoute.CONSTRAINT_FOREST_TRAIL:
+					route_col = Color(0.40, 0.85, 0.45, 0.75)
+				RegionRoute.CONSTRAINT_MOUNTAIN_PASS:
+					route_col = Color(0.70, 0.75, 0.85, 0.80)
+				RegionRoute.CONSTRAINT_MARSH_CROSSING:
+					route_col = Color(0.65, 0.55, 0.40, 0.75)
+
+		map_canvas.draw_line(pos_a, pos_b, route_col, line_w)
+
+		# Draw travel ticks marker on route midpoint
+		var mid: Vector2 = (pos_a + pos_b) * 0.5
+		map_canvas.draw_circle(mid, 4.0, route_col)
+
+	# Highlight selection ring
+	if regions.has(selected_region_id):
+		var sel_reg: RegionState = regions[selected_region_id]
+		map_canvas.draw_arc(sel_reg.map_pos, 32.0, 0.0, TAU, 32, UITheme.COLOR_ACCENT_GOLD, 2.5)
+
+func _render_region_details(reg: RegionState) -> void:
+	for child in box_region_details.get_children():
+		child.queue_free()
+
+	# Title & Terrain
+	var lbl_name := Label.new()
+	lbl_name.text = reg.display_name.to_upper()
+	lbl_name.add_theme_font_size_override("font_size", 13)
+	lbl_name.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+	box_region_details.add_child(lbl_name)
+
+	var lbl_terrain := Label.new()
+	lbl_terrain.text = "Terrain: %s | %s" % [str(reg.terrain_type).capitalize(), reg.settlement_name if reg.settlement_name != "" else "No Settlement"]
+	lbl_terrain.add_theme_font_size_override("font_size", 10)
+	lbl_terrain.add_theme_color_override("font_color", UITheme.COLOR_TEXT_MUTED)
+	box_region_details.add_child(lbl_terrain)
+
+	box_region_details.add_child(HSeparator.new())
+
+	# Status Card
+	var status_card := PanelContainer.new()
+	var border_col: Color = _get_faction_color(reg.controlling_faction)
+	if reg.is_contested:
+		border_col = Color(0.95, 0.35, 0.25)
+	status_card.add_theme_stylebox_override("panel", UITheme.create_panel_style(Color(0.12, 0.15, 0.22, 0.95), border_col, 1, 4))
+	box_region_details.add_child(status_card)
+
+	var status_box := VBoxContainer.new()
+	status_box.add_theme_constant_override("separation", 3)
+	status_card.add_child(status_box)
+
+	var lbl_status := Label.new()
+	lbl_status.text = "STATUS: %s" % str(reg.status).to_upper()
+	lbl_status.add_theme_font_size_override("font_size", 11)
+	lbl_status.add_theme_color_override("font_color", border_col)
+	status_box.add_child(lbl_status)
+
+	var controller_name: String = _get_faction_display_name(reg.controlling_faction)
+	var lbl_ctrl := Label.new()
+	lbl_ctrl.text = "Administering: %s" % controller_name
+	lbl_ctrl.add_theme_font_size_override("font_size", 10)
+	status_box.add_child(lbl_ctrl)
+
+	var claimant_name: String = _get_faction_display_name(reg.claimed_by_faction)
+	var lbl_claim := Label.new()
+	lbl_claim.text = "Recognized Claim: %s" % (claimant_name if claimant_name != "None" else "Unclaimed / Disputed")
+	lbl_claim.add_theme_font_size_override("font_size", 10)
+	lbl_claim.add_theme_color_override("font_color", Color("#cbd5e1"))
+	status_box.add_child(lbl_claim)
+
+	if reg.occupying_faction != &"":
+		var lbl_occ := Label.new()
+		lbl_occ.text = "MILITARY OCCUPATION: %s" % _get_faction_display_name(reg.occupying_faction)
+		lbl_occ.add_theme_font_size_override("font_size", 10)
+		lbl_occ.add_theme_color_override("font_color", UITheme.COLOR_RED_ALERT)
+		status_box.add_child(lbl_occ)
+
+	# Strategic Attributes
+	var strat_header := Label.new()
+	strat_header.text = "STRATEGIC ATTRIBUTES"
+	strat_header.add_theme_font_size_override("font_size", 11)
+	strat_header.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+	box_region_details.add_child(strat_header)
+
+	var grid_strat := GridContainer.new()
+	grid_strat.columns = 2
+	grid_strat.add_theme_constant_override("h_separation", 10)
+	grid_strat.add_theme_constant_override("v_separation", 2)
+	box_region_details.add_child(grid_strat)
+
+	_add_rel_stat_row(grid_strat, "Defensive Advantage:", "x%.2f" % reg.defensive_advantage, Color("#7bed9f"))
+	_add_rel_stat_row(grid_strat, "Travel Difficulty:", "x%.2f" % reg.travel_difficulty, Color("#eccc68"))
+
+	# Regional Resources
+	var res_header := Label.new()
+	res_header.text = "REGIONAL RESOURCES"
+	res_header.add_theme_font_size_override("font_size", 11)
+	res_header.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+	box_region_details.add_child(res_header)
+
+	var prim_res_str: String = ""
+	for r in reg.primary_resources:
+		prim_res_str += ("" if prim_res_str == "" else ", ") + str(r).capitalize()
+	var lbl_prim := Label.new()
+	lbl_prim.text = "Specialisation: %s" % (prim_res_str if prim_res_str != "" else "None")
+	lbl_prim.add_theme_font_size_override("font_size", 10)
+	box_region_details.add_child(lbl_prim)
+
+	var res_str: String = ""
+	for k in reg.regional_resources:
+		res_str += ("" if res_str == "" else "  |  ") + "%s: %d" % [str(k).capitalize(), reg.regional_resources[k]]
+	var lbl_res := Label.new()
+	lbl_res.text = "Stockpiles: %s" % (res_str if res_str != "" else "Depleted")
+	lbl_res.add_theme_font_size_override("font_size", 10)
+	lbl_res.add_theme_color_override("font_color", Color("#a4b0be"))
+	lbl_res.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box_region_details.add_child(lbl_res)
+
+	# Connected Routes
+	var route_header := Label.new()
+	route_header.text = "CONNECTED ROUTES"
+	route_header.add_theme_font_size_override("font_size", 11)
+	route_header.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+	box_region_details.add_child(route_header)
+
+	var routes: Array = _last_world_map_data.get("routes", [])
+	var regions: Dictionary = _last_world_map_data.get("regions", {})
+	var found_routes: int = 0
+	for r in routes:
+		if r.has_endpoint(reg.id):
+			found_routes += 1
+			var other_id: StringName = r.get_other_region(reg.id)
+			var other_reg: RegionState = regions.get(other_id, null)
+			var dest_name: String = other_reg.display_name if other_reg != null else str(other_id)
+			
+			var r_lbl := Label.new()
+			var avail_str: String = "OPEN" if r.is_open else "BLOCKED"
+			r_lbl.text = "-> %s [%s]\n   %d ticks | %d coin toll | %s" % [
+				dest_name,
+				str(r.traversal_constraint).replace("_", " ").capitalize(),
+				r.travel_ticks,
+				r.supply_cost_coin,
+				avail_str
+			]
+			r_lbl.add_theme_font_size_override("font_size", 9)
+			r_lbl.add_theme_color_override("font_color", Color("#2ed573") if r.is_open else Color("#ff4757"))
+			box_region_details.add_child(r_lbl)
+
+	if found_routes == 0:
+		var no_routes := Label.new()
+		no_routes.text = "No direct routes connected."
+		no_routes.add_theme_font_size_override("font_size", 9)
+		no_routes.add_theme_color_override("font_color", UITheme.COLOR_TEXT_MUTED)
+		box_region_details.add_child(no_routes)
+
+	# Faction Relations / Active Wars
+	var diplomacy: DiplomacyState = _last_world_map_data.get("diplomacy", null)
+	if diplomacy != null and reg.controlling_faction != &"" and reg.controlling_faction != FactionCatalog.FACTION_PLAYER:
+		box_region_details.add_child(HSeparator.new())
+		var has_war: bool = diplomacy.has_active_war(reg.controlling_faction, FactionCatalog.FACTION_PLAYER)
+		var dip_lbl := Label.new()
+		if has_war:
+			dip_lbl.text = "WARNING: Sovereign state is at WAR with the Crown!"
+			dip_lbl.add_theme_color_override("font_color", UITheme.COLOR_RED_ALERT)
+		else:
+			var rel: DiplomaticRelationship = diplomacy.get_relationship(reg.controlling_faction, FactionCatalog.FACTION_PLAYER)
+			dip_lbl.text = "Relations: Trust %.0f | Threat %.0f" % [rel.trust, rel.threat]
+			dip_lbl.add_theme_color_override("font_color", Color("#70a1ff"))
+		dip_lbl.add_theme_font_size_override("font_size", 10)
+		box_region_details.add_child(dip_lbl)
+
+func _get_faction_color(faction_id: StringName) -> Color:
+	match faction_id:
+		FactionCatalog.FACTION_PLAYER:
+			return Color(0.95, 0.85, 0.35) # Imperial Gold
+		FactionCatalog.FACTION_VALEN:
+			return Color(0.30, 0.75, 0.95) # Cyan
+		FactionCatalog.FACTION_OLD_GROVE:
+			return Color(0.35, 0.85, 0.45) # Emerald
+		FactionCatalog.FACTION_IRONPEAK:
+			return Color(0.95, 0.45, 0.25) # Rust Orange
+		_:
+			return Color(0.60, 0.65, 0.70) # Neutral Grey
+
+func _get_faction_display_name(faction_id: StringName) -> String:
+	match faction_id:
+		FactionCatalog.FACTION_PLAYER:
+			return "The Crown"
+		FactionCatalog.FACTION_VALEN:
+			return "Valen Trade Compact"
+		FactionCatalog.FACTION_OLD_GROVE:
+			return "Old Grove Commune"
+		FactionCatalog.FACTION_IRONPEAK:
+			return "Ironpeak Clans"
+		_:
+			return "None"
+
 
 
