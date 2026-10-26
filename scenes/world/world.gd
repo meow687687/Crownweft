@@ -889,8 +889,9 @@ func _simulation_tick() -> void:
 	for building: BuildingState in buildings:
 		# Food is consumed from actual household-accessible stores only. Bread sitting
 		# in the bakery must be hauled to a storehouse or Town Hall first.
-		if building.definition_id in [&"town_hall", &"storehouse"] and building.inventory.get_available_outgoing(&"bread") > 0:
-			food_inventories.append(building.inventory)
+		if building.definition_id in [&"town_hall", &"storehouse"]:
+			if building.inventory.get_available_outgoing(&"bread") > 0 or building.inventory.get_available_outgoing(&"meat") > 0:
+				food_inventories.append(building.inventory)
 	var needs_report: Dictionary = needs.tick_citizens(
 		citizens, food_inventories, current_tick, building_by_inv, pathfinding
 	)
@@ -1545,6 +1546,13 @@ func get_workforce_citizens_data() -> Array[Dictionary]:
 			"species_name": SpeciesCatalog.get_display_name(c.species_id),
 			"social_status_id": c.social_status_id,
 			"social_status_name": SocialClassCatalog.get_display_name(c.social_status_id),
+			"culture_id": c.culture_id,
+			"culture_name": CultureCatalog.get_display_name(c.culture_id),
+			"religion_id": c.religion_id,
+			"religion_name": ReligionCatalog.get_display_name(c.religion_id),
+			"doctrine_id": c.doctrine_id,
+			"doctrine_name": DoctrineCatalog.get_display_name(c.doctrine_id),
+			"active_belief_conflict": c.get_active_belief_conflict(),
 			"role": c.role_id,
 			"workplace_id": c.workplace_id,
 			"workplace_str": wp_str,
@@ -1578,6 +1586,13 @@ func get_assigned_citizens_for_building(building: BuildingState) -> Array[Dictio
 				"species_name": SpeciesCatalog.get_display_name(c.species_id),
 				"social_status_id": c.social_status_id,
 				"social_status_name": SocialClassCatalog.get_display_name(c.social_status_id),
+				"culture_id": c.culture_id,
+				"culture_name": CultureCatalog.get_display_name(c.culture_id),
+				"religion_id": c.religion_id,
+				"religion_name": ReligionCatalog.get_display_name(c.religion_id),
+				"doctrine_id": c.doctrine_id,
+				"doctrine_name": DoctrineCatalog.get_display_name(c.doctrine_id),
+				"active_belief_conflict": c.get_active_belief_conflict(),
 				"role": c.role_id,
 				"state_str": state_str,
 				"skill_name": relevant_skill,
@@ -1586,19 +1601,30 @@ func get_assigned_citizens_for_building(building: BuildingState) -> Array[Dictio
 			})
 	return list
 
-func spawn_citizen(pos: Vector2i, role: StringName = &"unassigned", species: StringName = &"", status: StringName = &"") -> CitizenState:
+func spawn_citizen(
+	pos: Vector2i,
+	role: StringName = &"unassigned",
+	species: StringName = &"",
+	status: StringName = &"",
+	culture: StringName = &"",
+	religion: StringName = &"",
+	doctrine: StringName = &""
+) -> CitizenState:
 	var s_id: StringName = SpeciesCatalog.validate_species_id(species) if species != &"" else SpeciesCatalog.DEFAULT_SPECIES_ID
 	var st_id: StringName = SocialClassCatalog.validate_status_id(status) if status != &"" else SocialClassCatalog.DEFAULT_STATUS_ID
-	var citizen: CitizenState = CitizenState.new(next_entity_id, pos, role, s_id, st_id)
+	var c_id: StringName = CultureCatalog.validate_culture_id(culture) if culture != &"" else CultureCatalog.DEFAULT_CULTURE_ID
+	var r_id: StringName = ReligionCatalog.validate_religion_id(religion) if religion != &"" else ReligionCatalog.DEFAULT_RELIGION_ID
+	var d_id: StringName = DoctrineCatalog.validate_doctrine_id(doctrine) if doctrine != &"" else CultureCatalog.get_default_doctrine(c_id)
+	var citizen: CitizenState = CitizenState.new(next_entity_id, pos, role, s_id, st_id, c_id, r_id, d_id)
 	next_entity_id += 1
 	citizens.append(citizen)
 	return citizen
 
-func spawn_citizen_with_distribution(pos: Vector2i, role: StringName = &"unassigned", rng_seed: int = 0, status: StringName = &"") -> CitizenState:
+func spawn_citizen_with_distribution(pos: Vector2i, role: StringName = &"unassigned", rng_seed: int = 0, status: StringName = &"", culture: StringName = &"") -> CitizenState:
 	var s_ids: Array[StringName] = SpeciesCatalog.SPECIES_IDS
 	var pick_idx: int = absi(rng_seed) % s_ids.size()
 	var s_id: StringName = s_ids[pick_idx]
-	return spawn_citizen(pos, role, s_id, status)
+	return spawn_citizen(pos, role, s_id, status, culture)
 
 func unassign_citizen(citizen: CitizenState) -> void:
 	if citizen == null or citizen.workplace_id <= 0:

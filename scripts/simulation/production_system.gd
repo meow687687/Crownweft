@@ -107,7 +107,7 @@ func tick_building(
 
 	# Active work drains energy and yields experience only when actively progressing
 	for w: CitizenState in workers:
-		w.consume_energy(CitizenState.WORK_ENERGY_DRAIN)
+		w.consume_energy(CitizenState.WORK_ENERGY_DRAIN, true)
 		if skill_name != &"":
 			w.gain_experience(skill_name, 0.1)
 

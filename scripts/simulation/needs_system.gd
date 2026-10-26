@@ -56,22 +56,29 @@ func _try_consume_food(
 	food_buildings_by_inventory: Dictionary,
 	pathfinding: PathfindingService
 ) -> bool:
+	const CANDIDATE_FOODS: Array[StringName] = [&"bread", &"meat"]
+	
 	for inv: Inventory in food_inventories:
-		if inv.get_available_outgoing(&"bread") < 1:
-			continue
-
-		# In the live game, only consume from a food store the citizen can reach.
-		if pathfinding != null and not food_buildings_by_inventory.is_empty():
-			var building: BuildingState = food_buildings_by_inventory.get(inv.owner_id, null)
-			if building == null:
-				continue
-			var footprint: Vector2i = building.get_footprint()
-			var path: Array[Vector2i] = pathfinding.find_path_to_adjacent(
-				citizen.position_tile, building.tile_origin, footprint
-			)
-			if path.is_empty():
+		for food_id: StringName in CANDIDATE_FOODS:
+			if inv.get_available_outgoing(food_id) < 1:
 				continue
 
-		if inv.remove_resource(&"bread", 1, "CONSUMPTION", false):
-			return true
+			# Enforce dietary restrictions: do not meet need with rejected food
+			if citizen.rejects_food(food_id):
+				continue
+
+			# In the live game, only consume from a food store the citizen can reach.
+			if pathfinding != null and not food_buildings_by_inventory.is_empty():
+				var building: BuildingState = food_buildings_by_inventory.get(inv.owner_id, null)
+				if building == null:
+					continue
+				var footprint: Vector2i = building.get_footprint()
+				var path: Array[Vector2i] = pathfinding.find_path_to_adjacent(
+					citizen.position_tile, building.tile_origin, footprint
+				)
+				if path.is_empty():
+					continue
+
+			if inv.remove_resource(food_id, 1, "CONSUMPTION", false):
+				return true
 	return false

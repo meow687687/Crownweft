@@ -115,6 +115,10 @@ static func serialize(
 			"species_id": str(c.species_id),
 			"social_status_id": str(c.social_status_id),
 			"status_transition_reason": str(c.last_status_transition_reason),
+			"culture_id": str(c.culture_id),
+			"religion_id": str(c.religion_id),
+			"doctrine_id": str(c.doctrine_id),
+			"convictions": c.convictions.duplicate(),
 			"current_block_reason": str(c.current_block_reason),
 			"energy": c.energy,
 			"is_resting": c.is_resting,
@@ -274,23 +278,47 @@ static func deserialize(data: Dictionary) -> Dictionary:
 	# Deserialize citizens
 	var citizens_arr: Array[CitizenState] = []
 	for c_dict in data.get("citizens", []):
-		var c_pos_arr: Array = c_dict["position_tile"]
+		var c_pos := Vector2i.ZERO
+		var raw_pos = c_dict.get("position_tile")
+		if raw_pos is Array and raw_pos.size() >= 2:
+			c_pos = Vector2i(raw_pos[0], raw_pos[1])
+		elif raw_pos is Vector2i:
+			c_pos = raw_pos
 		var raw_species: String = str(c_dict.get("species_id", ""))
 		var species_val: StringName = SpeciesCatalog.validate_species_id(StringName(raw_species)) if raw_species != "" else SpeciesCatalog.DEFAULT_SPECIES_ID
 		var raw_status: String = str(c_dict.get("social_status_id", ""))
 		var status_val: StringName = SocialClassCatalog.validate_status_id(StringName(raw_status)) if raw_status != "" else SocialClassCatalog.DEFAULT_STATUS_ID
+		var raw_culture: String = str(c_dict.get("culture_id", ""))
+		var culture_val: StringName = CultureCatalog.validate_culture_id(StringName(raw_culture)) if raw_culture != "" else CultureCatalog.DEFAULT_CULTURE_ID
+		var raw_religion: String = str(c_dict.get("religion_id", ""))
+		var religion_val: StringName = ReligionCatalog.validate_religion_id(StringName(raw_religion)) if raw_religion != "" else ReligionCatalog.DEFAULT_RELIGION_ID
+		var raw_doctrine: String = str(c_dict.get("doctrine_id", ""))
+		var doctrine_val: StringName = DoctrineCatalog.validate_doctrine_id(StringName(raw_doctrine)) if raw_doctrine != "" else CultureCatalog.get_default_doctrine(culture_val)
+		
 		var c: CitizenState = CitizenState.new(
 			c_dict["id"],
-			Vector2i(c_pos_arr[0], c_pos_arr[1]),
+			c_pos,
 			StringName(c_dict["role_id"]),
 			species_val,
-			status_val
+			status_val,
+			culture_val,
+			religion_val,
+			doctrine_val
 		)
+		var saved_convictions: Dictionary = c_dict.get("convictions", {})
+		if not saved_convictions.is_empty():
+			for k in saved_convictions:
+				c.convictions[StringName(k)] = saved_convictions[k]
 		c.last_status_transition_reason = str(c_dict.get("status_transition_reason", ""))
 		c.home_building_id = int(c_dict.get("home_building_id", 0))
 		c.workplace_id = int(c_dict.get("workplace_id", 0))
-		var target_arr: Array = c_dict.get("target_tile", c_pos_arr)
-		c.target_tile = Vector2i(int(target_arr[0]), int(target_arr[1]))
+		var target_arr = c_dict.get("target_tile")
+		if target_arr is Array and target_arr.size() >= 2:
+			c.target_tile = Vector2i(int(target_arr[0]), int(target_arr[1]))
+		elif target_arr is Vector2i:
+			c.target_tile = target_arr
+		else:
+			c.target_tile = c_pos
 		c.move_state = int(c_dict.get("move_state", CitizenState.MoveState.IDLE))
 		c.hunger_counter = c_dict.get("hunger_counter", 0)
 		c.food_state = c_dict.get("food_state", CitizenState.FoodState.FED)

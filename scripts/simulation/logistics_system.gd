@@ -191,7 +191,7 @@ func tick_haulers(
 		var arrived: bool = _advance_toward(hauler, target_building, target_inventory_id, pathfinding, current_tick, haul_factor)
 		if not arrived:
 			if citizen != null and hauler.carried_amount > 0:
-				citizen.consume_energy(CitizenState.WORK_ENERGY_DRAIN * (1.0 / haul_factor))
+				citizen.consume_energy(CitizenState.WORK_ENERGY_DRAIN * (1.0 / haul_factor), true)
 				citizen.gain_experience(&"hauling", 0.05)
 			continue
 
@@ -203,7 +203,7 @@ func tick_haulers(
 				hauler.last_block_reason = ""
 				job.blocked_reason = ""
 				if citizen != null:
-					citizen.consume_energy(CitizenState.WORK_ENERGY_DRAIN * 0.5)
+					citizen.consume_energy(CitizenState.WORK_ENERGY_DRAIN * 0.5, true)
 			else:
 				job_board.cancel_job(job, source_inv, dest_inv, "PICKUP_FAILED")
 				hauler.active_job = null
@@ -218,7 +218,7 @@ func tick_haulers(
 				hauler.clear_path()
 				hauler.last_block_reason = ""
 				if citizen != null:
-					citizen.consume_energy(CitizenState.WORK_ENERGY_DRAIN * 0.5)
+					citizen.consume_energy(CitizenState.WORK_ENERGY_DRAIN * 0.5, true)
 					citizen.gain_experience(&"hauling", 0.5)
 					if citizen.is_exhausted():
 						citizen.is_resting = true

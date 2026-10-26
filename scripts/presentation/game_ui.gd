@@ -74,6 +74,8 @@ var active_species_filter: StringName = &"all"
 var species_filter_buttons: Dictionary = {}
 var active_status_filter: StringName = &"all"
 var status_filter_buttons: Dictionary = {}
+var active_culture_filter: StringName = &"all"
+var culture_filter_buttons: Dictionary = {}
 var _last_workforce_citizens: Array = []
 var _last_workforce_summary: Dictionary = {}
 var _last_auto_staffing: bool = false
@@ -704,7 +706,10 @@ func show_citizen_details(citizen: CitizenState, workplace: BuildingState = null
 
 	var sp_name: String = SpeciesCatalog.get_display_name(citizen.species_id)
 	var st_name: String = SocialClassCatalog.get_display_name(citizen.social_status_id)
-	label_inspector_title.text = "CITIZEN #%d — %s (%s, %s)" % [citizen.id, str(citizen.role_id).capitalize(), sp_name, st_name]
+	var cult_name: String = CultureCatalog.get_display_name(citizen.culture_id)
+	var rel_name: String = ReligionCatalog.get_display_name(citizen.religion_id)
+	var doc_name: String = DoctrineCatalog.get_display_name(citizen.doctrine_id)
+	label_inspector_title.text = "CITIZEN #%d — %s (%s, %s, %s)" % [citizen.id, str(citizen.role_id).capitalize(), sp_name, st_name, cult_name]
 
 	# Activity / Status explanation
 	if citizen.is_resting:
@@ -792,7 +797,12 @@ func show_citizen_details(citizen: CitizenState, workplace: BuildingState = null
 	var st_priv: Array = st_def.get("privileges", [])
 	var st_resp: Array = st_def.get("responsibilities", [])
 
-	var text: String = "SPECIES: %s\n" % sp_name
+	var text: String = "CULTURE: %s\n" % cult_name
+	text += "RELIGION: %s (%s)\n" % [rel_name, doc_name]
+	var belief_conflict: String = citizen.get_active_belief_conflict()
+	if belief_conflict != "":
+		text += "BELIEF CONFLICT: %s\n" % belief_conflict
+	text += "SPECIES: %s\n" % sp_name
 	text += "SOCIAL STATUS: %s\n" % st_name
 	text += "TRAITS: %s\n" % sp_desc
 	if not st_priv.is_empty():
@@ -805,6 +815,12 @@ func show_citizen_details(citizen: CitizenState, workplace: BuildingState = null
 		text += "SPECIES ADVANTAGES: %s\n" % ", ".join(sp_adv)
 	if not sp_dis.is_empty():
 		text += "SPECIES DISADVANTAGES: %s\n" % ", ".join(sp_dis)
+	text += "\n"
+	text += "CONVICTIONS:\n"
+	text += " • Work Ethic: %.2f\n" % citizen.get_conviction(&"work_ethic")
+	text += " • Nature Conservation: %.2f\n" % citizen.get_conviction(&"nature_conservation")
+	text += " • Dietary Preference: %s\n" % str(citizen.convictions.get(&"dietary_type", "omnivore")).capitalize()
+	text += " • Piety: %.2f\n" % citizen.get_conviction(&"piety")
 	text += "\n"
 	text += "ENERGY: %d / 100\n" % int(citizen.energy)
 	text += "WORKPLACE: %s\n" % wp_name
@@ -821,10 +837,10 @@ func show_citizen_details(citizen: CitizenState, workplace: BuildingState = null
 func _build_workforce_panel() -> void:
 	panel_workforce = PanelContainer.new()
 	panel_workforce.set_anchors_preset(Control.PRESET_CENTER)
-	panel_workforce.offset_left = -330
-	panel_workforce.offset_top = -225
-	panel_workforce.offset_right = 330
-	panel_workforce.offset_bottom = 215
+	panel_workforce.offset_left = -340
+	panel_workforce.offset_top = -250
+	panel_workforce.offset_right = 340
+	panel_workforce.offset_bottom = 250
 	panel_workforce.add_theme_stylebox_override("panel", UITheme.create_panel_style(UITheme.COLOR_BG_PANEL, UITheme.COLOR_BORDER_GOLD, 2, 6))
 	panel_workforce.visible = false
 	panel_workforce.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -927,6 +943,23 @@ func _build_workforce_panel() -> void:
 		status_filter_bar.add_child(btn)
 		status_filter_buttons[st_key] = btn
 
+	var culture_filter_bar := HBoxContainer.new()
+	culture_filter_bar.add_theme_constant_override("separation", 4)
+	main_vbox.add_child(culture_filter_bar)
+
+	var culture_filters: Array[String] = ["ALL CULTURES", "VALEN", "KHORVATH", "SYLVANARI"]
+	for cult_f in culture_filters:
+		var btn := Button.new()
+		btn.text = cult_f
+		btn.custom_minimum_size = Vector2(0, 22)
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn.add_theme_font_size_override("font_size", 10)
+		UITheme.apply_button_style(btn, cult_f == "ALL CULTURES")
+		var cult_key := StringName("all" if cult_f.begins_with("ALL") else cult_f.to_lower())
+		btn.pressed.connect(func(): _set_culture_filter(cult_key))
+		culture_filter_bar.add_child(btn)
+		culture_filter_buttons[cult_key] = btn
+
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -958,6 +991,12 @@ func _set_status_filter(st_key: StringName) -> void:
 	active_status_filter = st_key
 	for k in status_filter_buttons:
 		UITheme.apply_button_style(status_filter_buttons[k], k == st_key)
+	_refresh_workforce_citizen_list()
+
+func _set_culture_filter(cult_key: StringName) -> void:
+	active_culture_filter = cult_key
+	for k in culture_filter_buttons:
+		UITheme.apply_button_style(culture_filter_buttons[k], k == cult_key)
 	_refresh_workforce_citizen_list()
 
 func toggle_workforce_panel() -> void:
@@ -1027,6 +1066,10 @@ func _refresh_workforce_citizen_list() -> void:
 		if active_status_filter != &"all" and st_id != active_status_filter:
 			continue
 
+		var cult_id: StringName = c.get("culture_id", &"valen")
+		if active_culture_filter != &"all" and cult_id != active_culture_filter:
+			continue
+
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 6)
 		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1036,18 +1079,23 @@ func _refresh_workforce_citizen_list() -> void:
 		var wp_str: String = c.get("workplace_str", "None")
 		var sp_name_str: String = c.get("species_name", "Human")
 		var st_name_str: String = c.get("social_status_name", "Commoner")
+		var cult_name_str: String = c.get("culture_name", "Valen")
+		var conflict_str: String = c.get("active_belief_conflict", "")
+		var conflict_suffix: String = " [CONFLICT]" if conflict_str != "" else ""
 		var skill_name: String = str(c.get("primary_skill_name", "")).capitalize()
 		var skill_val: int = c.get("primary_skill_val", 50)
-		lbl.text = "#%d | %s (%s, %s) | %s | %s | Energy: %d%% | %s: %d" % [
+		lbl.text = "#%d | %s (%s, %s, %s) | %s | %s | Energy: %d%% | %s: %d%s" % [
 			c.get("id", 0),
 			str(role).capitalize(),
 			sp_name_str,
 			st_name_str,
+			cult_name_str,
 			state_str,
 			wp_str,
 			c.get("energy", 100),
 			skill_name,
-			skill_val
+			skill_val,
+			conflict_suffix
 		]
 		lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		lbl.add_theme_font_size_override("font_size", 11)

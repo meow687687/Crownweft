@@ -29,6 +29,10 @@ const IDLE_ENERGY_DRAIN: float = 0.02
 @export var species_id: StringName = SpeciesCatalog.DEFAULT_SPECIES_ID
 @export var social_status_id: StringName = SocialClassCatalog.DEFAULT_STATUS_ID
 @export var last_status_transition_reason: String = ""
+@export var culture_id: StringName = CultureCatalog.DEFAULT_CULTURE_ID
+@export var religion_id: StringName = ReligionCatalog.DEFAULT_RELIGION_ID
+@export var doctrine_id: StringName = DoctrineCatalog.DEFAULT_DOCTRINE_ID
+var convictions: Dictionary = {} # StringName -> Variant
 @export var home_building_id: int = 0
 @export var workplace_id: int = 0
 @export var role_id: StringName = &"unassigned"
@@ -47,16 +51,61 @@ var path: Array[Vector2i] = []
 @export var is_resting: bool = false
 var skills: Dictionary = {} # StringName -> float
 
-func _init(p_id: int = 0, p_pos: Vector2i = Vector2i.ZERO, p_role: StringName = &"unassigned", p_species: StringName = &"", p_status: StringName = &"") -> void:
+func _init(
+	p_id: int = 0,
+	p_pos: Vector2i = Vector2i.ZERO,
+	p_role: StringName = &"unassigned",
+	p_species: StringName = &"",
+	p_status: StringName = &"",
+	p_culture: StringName = &"",
+	p_religion: StringName = &"",
+	p_doctrine: StringName = &""
+) -> void:
 	id = p_id
 	species_id = SpeciesCatalog.validate_species_id(p_species) if p_species != &"" else SpeciesCatalog.DEFAULT_SPECIES_ID
 	social_status_id = SocialClassCatalog.validate_status_id(p_status) if p_status != &"" else SocialClassCatalog.DEFAULT_STATUS_ID
+	culture_id = CultureCatalog.validate_culture_id(p_culture) if p_culture != &"" else CultureCatalog.DEFAULT_CULTURE_ID
+	religion_id = ReligionCatalog.validate_religion_id(p_religion) if p_religion != &"" else ReligionCatalog.DEFAULT_RELIGION_ID
+	doctrine_id = DoctrineCatalog.validate_doctrine_id(p_doctrine) if p_doctrine != &"" else CultureCatalog.get_default_doctrine(culture_id)
 	position_tile = p_pos
 	target_tile = p_pos
 	role_id = p_role
 	energy = MAX_ENERGY
 	is_resting = false
 	init_starting_skills()
+	init_starting_convictions()
+
+func init_starting_convictions() -> void:
+	convictions = DoctrineCatalog.get_default_convictions(doctrine_id)
+
+func get_conviction(domain: StringName) -> float:
+	var val = convictions.get(domain, 0.5)
+	if val is float or val is int:
+		return clampf(float(val), 0.0, 1.0)
+	return 0.5
+
+func set_conviction(domain: StringName, val: float) -> void:
+	convictions[domain] = clampf(val, 0.0, 1.0)
+
+func rejects_food(food_id: StringName) -> bool:
+	var diet: String = str(convictions.get(&"dietary_type", "omnivore"))
+	if diet == "vegetarian" and food_id == &"meat":
+		return true
+	if DoctrineCatalog.rejects_food(doctrine_id, food_id):
+		return true
+	return false
+
+func get_active_belief_conflict() -> String:
+	# 1. Dietary conflict
+	if hunger_counter > 0 and rejects_food(&"meat") and food_state != FoodState.FED:
+		return "Rejects meat; available dietary alternatives are insufficient."
+	# 2. Conservation conflict
+	if role_id == &"woodcutter" and get_conviction(&"nature_conservation") >= 0.7:
+		return "Supports conservation; forestry assignment conflicts with personal conviction."
+	# 3. Work ethic restlessness
+	if role_id == &"unassigned" and workplace_id <= 0 and get_conviction(&"work_ethic") >= 0.8:
+		return "Values diligent labor; currently idle and unassigned."
+	return ""
 
 func init_starting_skills(seed_offset: int = 0) -> void:
 	var primes: Dictionary = {
@@ -108,9 +157,15 @@ func set_social_status(new_status: StringName, reason: String = "") -> void:
 	social_status_id = SocialClassCatalog.validate_status_id(new_status)
 	last_status_transition_reason = reason
 
-func consume_energy(amount: float) -> void:
+func consume_energy(amount: float, is_work: bool = false) -> void:
 	var drain_mod: float = SpeciesCatalog.get_energy_drain_modifier(species_id)
-	energy = clampf(energy - (amount * drain_mod), MIN_ENERGY, MAX_ENERGY)
+	var ethic_discount: float = 1.0
+	var actually_working: bool = is_work or (workplace_id > 0 and not is_resting and move_state == MoveState.IDLE)
+	if actually_working:
+		var ethic: float = get_conviction(&"work_ethic")
+		if ethic >= 0.7:
+			ethic_discount = 1.0 - (ethic * 0.12)
+	energy = clampf(energy - (amount * drain_mod * ethic_discount), MIN_ENERGY, MAX_ENERGY)
 
 func restore_energy(amount: float) -> void:
 	var rec_mod: float = SpeciesCatalog.get_energy_recovery_modifier(species_id)

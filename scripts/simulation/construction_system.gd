@@ -73,7 +73,7 @@ func tick_building(
 	if not builders.is_empty():
 		labor_advance = 0.0
 		for b: CitizenState in builders:
-			b.consume_energy(CitizenState.WORK_ENERGY_DRAIN)
+			b.consume_energy(CitizenState.WORK_ENERGY_DRAIN, true)
 			b.gain_experience(&"masonry", 0.1)
 			labor_advance += b.get_skill_factor(&"masonry")
 		labor_advance = minf(labor_advance, 5.0)
