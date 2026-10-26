@@ -167,7 +167,7 @@ func test_worker_slots_scaling() -> void:
 	assert_eq(BuildingCatalog.get_worker_slots_for_footprint(&"farm", Vector2i(4, 4)), 3, "4x4 farm has 3 worker slots")
 	assert_eq(BuildingCatalog.get_worker_slots_for_footprint(&"farm", Vector2i(6, 6)), 6, "6x6 farm has 6 worker slots (clamped)")
 
-	# Storehouse slots: 2 + int(max(0, area - 6) / 8), clamped 2..5
+	# Storehouse slots: 2 + int(max(0, area - 6) / 8), clamped to [2, 4] (evaluates to 2..3 across supported footprints 2x2 to 5x4)
 	assert_eq(BuildingCatalog.get_worker_slots_for_footprint(&"storehouse", Vector2i(2, 2)), 2, "2x2 storehouse has 2 worker slots")
 	assert_eq(BuildingCatalog.get_worker_slots_for_footprint(&"storehouse", Vector2i(3, 2)), 2, "3x2 storehouse has 2 worker slots")
 	assert_eq(BuildingCatalog.get_worker_slots_for_footprint(&"storehouse", Vector2i(5, 4)), 3, "5x4 storehouse has 3 worker slots")

@@ -263,6 +263,9 @@ static func get_worker_slots_for_footprint(def_id: StringName, fp: Vector2i) -> 
 		# 1 slot at 4 tiles, 2 at 9 tiles, up to 6 slots at 36 tiles
 		return clampi(1 + int(actual_area / 6), 1, 6)
 	if def_id == &"storehouse":
+		# Base (3x2, area 6) = 2 slots. Max footprint (5x4, area 20) = 3 slots.
+		# Formula: 2 base slots + 1 slot per 8 additional tiles above base, clamped to [2, 4].
+		# Evaluates to 2 slots for 2x2 to 4x3, and 3 slots for 4x4 to 5x4.
 		return clampi(2 + int(maxi(0, actual_area - 6) / 8), 2, 4)
 	return base_slots
 
