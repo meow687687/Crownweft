@@ -2036,6 +2036,17 @@ func _on_map_canvas_draw() -> void:
 			map_canvas.draw_circle(army_pos, 5.0, Color.BLACK)
 			map_canvas.draw_circle(army_pos, 3.0, a_col)
 
+	# Draw active trade shipments
+	var shipments: Dictionary = _last_world_map_data.get("shipments", {})
+	for s in shipments.values():
+		if not s.is_active():
+			continue
+		var s_reg: RegionState = regions.get(s.current_region_id, null)
+		if s_reg != null:
+			var ship_pos: Vector2 = s_reg.map_pos + Vector2(25, 20)
+			map_canvas.draw_rect(Rect2(ship_pos - Vector2(5, 5), Vector2(10, 10)), Color(0.95, 0.75, 0.25, 0.9))
+			map_canvas.draw_rect(Rect2(ship_pos - Vector2(3, 3), Vector2(6, 6)), Color(0.1, 0.1, 0.1, 0.9))
+
 func _render_region_details(reg: RegionState) -> void:
 	for child in box_region_details.get_children():
 		child.queue_free()
@@ -2380,6 +2391,62 @@ func _render_region_details(reg: RegionState) -> void:
 			eng_stats.add_theme_font_size_override("font_size", 9)
 			eng_stats.add_theme_color_override("font_color", Color("#cbd5e1"))
 			eng_vbox.add_child(eng_stats)
+
+	# Active Regional Trade Shipments & Convoys
+	var shipments: Dictionary = _last_world_map_data.get("shipments", {})
+	var reg_shipments: Array = []
+	for s in shipments.values():
+		if s.is_active() and (s.current_region_id == reg.id or s.destination_region_id == reg.id or s.origin_region_id == reg.id):
+			reg_shipments.append(s)
+
+	if not reg_shipments.is_empty():
+		box_region_details.add_child(HSeparator.new())
+		var ship_hdr := Label.new()
+		ship_hdr.text = "ACTIVE TRADE SHIPMENTS"
+		ship_hdr.add_theme_font_size_override("font_size", 11)
+		ship_hdr.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+		box_region_details.add_child(ship_hdr)
+
+		var contracts: Dictionary = _last_world_map_data.get("contracts", {})
+		for s in reg_shipments:
+			var ship_card := PanelContainer.new()
+			ship_card.add_theme_stylebox_override("panel", UITheme.create_panel_style(Color(0.12, 0.15, 0.18, 0.95), UITheme.COLOR_ACCENT_GOLD, 1, 4))
+			box_region_details.add_child(ship_card)
+
+			var s_vbox := VBoxContainer.new()
+			s_vbox.add_theme_constant_override("separation", 2)
+			ship_card.add_child(s_vbox)
+
+			var c: TradeContract = contracts.get(s.contract_id, null)
+			var s_title := Label.new()
+			s_title.text = "🐪 Trade Caravan #%d [%s]" % [s.id, str(s.status).replace("_", " ").to_upper()]
+			s_title.add_theme_font_size_override("font_size", 10)
+			s_title.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+			s_vbox.add_child(s_title)
+
+			var cargo_str: String = ""
+			for r_id in s.cargo:
+				cargo_str += ("" if cargo_str == "" else ", ") + "%d %s" % [s.cargo[r_id], str(r_id).capitalize()]
+
+			var s_cargo := Label.new()
+			s_cargo.text = "Cargo: %s\nRoute: %s -> %s" % [
+				cargo_str if cargo_str != "" else "Empty / In Transit",
+				str(s.origin_region_id).replace("_", " ").capitalize(),
+				str(s.destination_region_id).replace("_", " ").capitalize()
+			]
+			s_cargo.add_theme_font_size_override("font_size", 9)
+			s_cargo.add_theme_color_override("font_color", Color("#cbd5e1"))
+			s_vbox.add_child(s_cargo)
+
+			if c != null:
+				var s_price := Label.new()
+				s_price.text = "Agreed Price: %d Coins | Seller: %s" % [
+					c.total_price,
+					_get_faction_display_name(c.seller_faction_id)
+				]
+				s_price.add_theme_font_size_override("font_size", 9)
+				s_price.add_theme_color_override("font_color", Color("#7bed9f"))
+				s_vbox.add_child(s_price)
 
 	# Faction Relations / Active Wars
 	var diplomacy: DiplomacyState = _last_world_map_data.get("diplomacy", null)

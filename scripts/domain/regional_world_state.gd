@@ -9,6 +9,10 @@ var objectives: Dictionary = {} # int -> CampaignObjective
 var next_objective_id: int = 1
 var engagements: Dictionary = {} # int -> RegionalEngagement
 var next_engagement_id: int = 1
+var contracts: Dictionary = {} # int -> TradeContract
+var next_contract_id: int = 1
+var shipments: Dictionary = {} # int -> TradeShipment
+var next_shipment_id: int = 1
 var selected_region_id: StringName = &""
 
 func _init() -> void:
@@ -905,6 +909,450 @@ func update_campaign_objectives(diplomacy: DiplomacyState, current_tick: int) ->
 					if secure and reg.controlling_faction == obj.faction_id:
 						obj.complete("Supply route secured", current_tick)
 
+# =========================================================================
+# REGIONAL TRADE CONVOYS & ECONOMIC LOGISTICS
+# =========================================================================
+
+func get_contract(contract_id: int) -> TradeContract:
+	return contracts.get(contract_id, null)
+
+func get_shipment(shipment_id: int) -> TradeShipment:
+	return shipments.get(shipment_id, null)
+
+func get_active_contracts(faction_id: StringName = &"") -> Array[TradeContract]:
+	var res: Array[TradeContract] = []
+	for c in contracts.values():
+		if c.is_active():
+			if faction_id == &"" or c.buyer_faction_id == faction_id or c.seller_faction_id == faction_id:
+				res.append(c)
+	return res
+
+func get_active_shipments(faction_id: StringName = &"") -> Array[TradeShipment]:
+	var res: Array[TradeShipment] = []
+	for s in shipments.values():
+		if s.is_active():
+			if faction_id == &"" or s.carrier_faction_id == faction_id:
+				res.append(s)
+	return res
+
+func get_shipments_for_region(region_id: StringName) -> Array[TradeShipment]:
+	var res: Array[TradeShipment] = []
+	for s in shipments.values():
+		if s.is_active() and s.current_region_id == region_id:
+			res.append(s)
+	return res
+
+func create_trade_contract(
+	p_buyer: StringName,
+	p_seller: StringName,
+	p_resource: StringName,
+	p_amount: int,
+	p_total_price: int,
+	p_origin: StringName,
+	p_dest: StringName,
+	p_tick: int
+) -> TradeContract:
+	if p_buyer == p_seller or p_buyer == &"" or p_seller == &"":
+		return null
+	if not FactionCatalog.FACTION_IDS.has(p_buyer) or not FactionCatalog.FACTION_IDS.has(p_seller):
+		return null
+	if p_amount <= 0 or p_total_price < 0:
+		return null
+	if not regions.has(p_origin) or not regions.has(p_dest) or p_origin == p_dest:
+		return null
+
+	var c := TradeContract.new(
+		next_contract_id,
+		p_buyer,
+		p_seller,
+		p_resource,
+		p_amount,
+		p_total_price,
+		p_origin,
+		p_dest,
+		p_tick
+	)
+	next_contract_id += 1
+	contracts[c.id] = c
+	return c
+
+func accept_trade_contract(
+	contract_id: int,
+	player_inventory: Inventory,
+	diplomacy: DiplomacyState,
+	current_tick: int
+) -> Dictionary:
+	var c: TradeContract = get_contract(contract_id)
+	if c == null:
+		return {"ok": false, "reason": "Contract not found"}
+	if c.status != TradeContract.STATUS_OFFERED:
+		return {"ok": false, "reason": "Contract is not in offered state"}
+
+	# 1. War check between buyer and seller
+	if diplomacy != null and diplomacy.has_active_war(c.buyer_faction_id, c.seller_faction_id):
+		var war: WarState = diplomacy.get_active_war(c.buyer_faction_id, c.seller_faction_id)
+		if war != null and war.status == WarState.STATUS_WAR:
+			c.transition_to(TradeContract.STATUS_FAILED, "Trade prohibited while at war", current_tick)
+			return {"ok": false, "reason": "Trade prohibited while at war"}
+
+	# 2. Route validation
+	var route_res: Dictionary = find_route(c.origin_region_id, c.destination_region_id)
+	if not route_res["ok"]:
+		c.transition_to(TradeContract.STATUS_FAILED, "No accessible route between trading regions", current_tick)
+		return {"ok": false, "reason": "No accessible route between %s and %s" % [str(c.origin_region_id), str(c.destination_region_id)]}
+
+	# 3. Seller goods availability check
+	if c.seller_faction_id == FactionCatalog.FACTION_PLAYER:
+		if player_inventory == null or player_inventory.get_available_outgoing(c.resource_id) < c.resource_amount:
+			return {"ok": false, "reason": "Insufficient goods in storage to fulfill trade"}
+	else:
+		var seller_fac: FactionState = diplomacy.factions.get(c.seller_faction_id, null) if diplomacy != null else null
+		if seller_fac == null or seller_fac.get_available_resource(c.resource_id) < c.resource_amount:
+			return {"ok": false, "reason": "Seller possesses insufficient resource stock"}
+
+	# 4. Buyer payment availability check
+	if c.buyer_faction_id == FactionCatalog.FACTION_PLAYER:
+		if player_inventory == null or player_inventory.get_available_outgoing(&"coin") < c.total_price:
+			return {"ok": false, "reason": "Insufficient coins in storage to purchase goods"}
+	else:
+		var buyer_fac: FactionState = diplomacy.factions.get(c.buyer_faction_id, null) if diplomacy != null else null
+		if buyer_fac == null or buyer_fac.get_available_treasury() < c.total_price:
+			return {"ok": false, "reason": "Buyer possesses insufficient treasury funds"}
+
+	# 5. Destination storage capacity check
+	if c.buyer_faction_id == FactionCatalog.FACTION_PLAYER:
+		if player_inventory == null or not player_inventory.can_accept(c.resource_id, c.resource_amount):
+			return {"ok": false, "reason": "Insufficient storage capacity to receive trade goods"}
+
+	# 6. Apply atomic reservations
+	if c.seller_faction_id == FactionCatalog.FACTION_PLAYER:
+		player_inventory.reserve_out(c.resource_id, c.resource_amount)
+	else:
+		var seller_fac: FactionState = diplomacy.factions.get(c.seller_faction_id, null)
+		seller_fac.reserve_resource(c.resource_id, c.resource_amount)
+
+	if c.buyer_faction_id == FactionCatalog.FACTION_PLAYER:
+		player_inventory.reserve_out(&"coin", c.total_price)
+		player_inventory.reserve_in(c.resource_id, c.resource_amount)
+	else:
+		var buyer_fac: FactionState = diplomacy.factions.get(c.buyer_faction_id, null)
+		buyer_fac.reserve_treasury(c.total_price)
+
+	c.transition_to(TradeContract.STATUS_ACCEPTED, "", current_tick)
+	c.status = TradeContract.STATUS_RESERVED
+
+	# 7. Create shipment & load cargo
+	var loaded_cargo: Dictionary = {c.resource_id: c.resource_amount}
+	if c.seller_faction_id == FactionCatalog.FACTION_PLAYER:
+		player_inventory.remove_resource(c.resource_id, c.resource_amount, "TRADE SHIPMENT LOADED", true)
+	else:
+		var seller_fac: FactionState = diplomacy.factions.get(c.seller_faction_id, null)
+		seller_fac.resources[c.resource_id] = maxi(0, int(seller_fac.resources.get(c.resource_id, 0)) - c.resource_amount)
+		seller_fac.release_reserved_resource(c.resource_id, c.resource_amount)
+
+	var shipment := TradeShipment.new(
+		next_shipment_id,
+		c.id,
+		c.seller_faction_id,
+		c.origin_region_id,
+		c.destination_region_id,
+		loaded_cargo,
+		current_tick
+	)
+	next_shipment_id += 1
+
+	var path: Array[StringName] = []
+	for p in route_res["path"]:
+		path.append(StringName(p))
+
+	shipment.route_path = path
+	shipment.path_index = 0
+	shipment.segment_ticks_progress = 0.0
+	var first_step: StringName = path[1]
+	var seg_route: RegionRoute = get_route_between(path[0], first_step)
+	shipment.segment_total_ticks = seg_route.travel_ticks if seg_route != null else 60
+
+	shipment.transition_to(TradeShipment.STATUS_IN_TRANSIT, "Caravan departed origin", current_tick)
+	c.shipment_id = shipment.id
+	c.transition_to(TradeContract.STATUS_IN_TRANSIT, "", current_tick)
+	shipments[shipment.id] = shipment
+
+	return {
+		"ok": true,
+		"contract_id": c.id,
+		"shipment_id": shipment.id,
+		"route": path,
+		"total_ticks": route_res["total_ticks"]
+	}
+
+func tick_regional_trade_shipments(
+	current_tick: int,
+	diplomacy: DiplomacyState = null,
+	player_inventory: Inventory = null
+) -> void:
+	for shipment in shipments.values():
+		if not shipment.is_active():
+			continue
+
+		if shipment.status == TradeShipment.STATUS_IN_TRANSIT:
+			if shipment.path_index >= shipment.route_path.size() - 1:
+				shipment.current_region_id = shipment.destination_region_id
+				shipment.route_path.clear()
+				shipment.path_index = 0
+				shipment.transition_to(TradeShipment.STATUS_DELIVERED, "Arrived at destination", current_tick)
+				deliver_and_settle_contract(shipment.contract_id, player_inventory, diplomacy, current_tick)
+				continue
+
+			var from_node: StringName = shipment.route_path[shipment.path_index]
+			var to_node: StringName = shipment.route_path[shipment.path_index + 1]
+			var active_route: RegionRoute = get_route_between(from_node, to_node)
+
+			# War restriction on target region
+			var dest_reg: RegionState = regions.get(to_node, null)
+			if diplomacy != null and dest_reg != null and dest_reg.controlling_faction != &"":
+				if diplomacy.has_active_war(shipment.carrier_faction_id, dest_reg.controlling_faction):
+					var war: WarState = diplomacy.get_active_war(shipment.carrier_faction_id, dest_reg.controlling_faction)
+					if war != null and war.status == WarState.STATUS_WAR:
+						active_route = null
+
+			if active_route == null or not active_route.is_open:
+				var detour_res: Dictionary = find_route(from_node, shipment.destination_region_id)
+				if detour_res["ok"] and detour_res["path"].size() >= 2:
+					var new_path: Array[StringName] = []
+					for p in detour_res["path"]:
+						new_path.append(StringName(p))
+					shipment.route_path = new_path
+					shipment.path_index = 0
+					shipment.segment_ticks_progress = 0.0
+					var new_route: RegionRoute = get_route_between(new_path[0], new_path[1])
+					shipment.segment_total_ticks = new_route.travel_ticks if new_route != null else 60
+					shipment.record_event(current_tick, "detour", "Route to %s blocked; detouring via %s." % [str(to_node), str(new_path[1])])
+					to_node = new_path[1]
+					active_route = new_route
+				else:
+					shipment.transition_to(TradeShipment.STATUS_WAITING_ROUTE, "Route to %s blocked; no detour available" % str(to_node), current_tick)
+					shipment.blocked_reason = "Blocked route between %s and %s" % [str(from_node), str(to_node)]
+					continue
+
+			var target_reg: RegionState = regions.get(to_node, null)
+			var terrain_factor: float = target_reg.travel_difficulty if target_reg != null else 1.0
+			shipment.segment_ticks_progress += (1.0 / maxf(0.1, terrain_factor))
+
+			if shipment.segment_ticks_progress >= float(shipment.segment_total_ticks):
+				shipment.path_index += 1
+				shipment.current_region_id = to_node
+				shipment.segment_ticks_progress = 0.0
+				shipment.record_event(current_tick, "region_entered", "Caravan entered %s." % str(to_node))
+
+				if shipment.current_region_id == shipment.destination_region_id:
+					shipment.route_path.clear()
+					shipment.path_index = 0
+					shipment.transition_to(TradeShipment.STATUS_DELIVERED, "Arrived at destination %s" % str(to_node), current_tick)
+					deliver_and_settle_contract(shipment.contract_id, player_inventory, diplomacy, current_tick)
+				else:
+					var next_target: StringName = shipment.route_path[shipment.path_index + 1]
+					var next_route: RegionRoute = get_route_between(shipment.current_region_id, next_target)
+					shipment.segment_total_ticks = next_route.travel_ticks if next_route != null else 60
+
+		elif shipment.status == TradeShipment.STATUS_RETURNING:
+			if shipment.current_region_id == shipment.origin_region_id or shipment.route_path.is_empty():
+				_finalize_returned_shipment(shipment, player_inventory, diplomacy, current_tick)
+				continue
+
+			var from_node: StringName = shipment.route_path[shipment.path_index]
+			var to_node: StringName = shipment.route_path[shipment.path_index + 1]
+			var active_route: RegionRoute = get_route_between(from_node, to_node)
+			if active_route == null or not active_route.is_open:
+				var detour_res: Dictionary = find_route(from_node, shipment.origin_region_id)
+				if detour_res["ok"] and detour_res["path"].size() >= 2:
+					var new_path: Array[StringName] = []
+					for p in detour_res["path"]:
+						new_path.append(StringName(p))
+					shipment.route_path = new_path
+					shipment.path_index = 0
+					shipment.segment_ticks_progress = 0.0
+					var new_route: RegionRoute = get_route_between(new_path[0], new_path[1])
+					shipment.segment_total_ticks = new_route.travel_ticks if new_route != null else 60
+					to_node = new_path[1]
+				else:
+					continue
+
+			var target_reg: RegionState = regions.get(to_node, null)
+			var terrain_factor: float = target_reg.travel_difficulty if target_reg != null else 1.0
+			shipment.segment_ticks_progress += (1.0 / maxf(0.1, terrain_factor))
+
+			if shipment.segment_ticks_progress >= float(shipment.segment_total_ticks):
+				shipment.path_index += 1
+				shipment.current_region_id = to_node
+				shipment.segment_ticks_progress = 0.0
+				if shipment.current_region_id == shipment.origin_region_id:
+					_finalize_returned_shipment(shipment, player_inventory, diplomacy, current_tick)
+				else:
+					var next_target: StringName = shipment.route_path[shipment.path_index + 1]
+					var next_route: RegionRoute = get_route_between(shipment.current_region_id, next_target)
+					shipment.segment_total_ticks = next_route.travel_ticks if next_route != null else 60
+
+func deliver_and_settle_contract(
+	contract_id: int,
+	player_inventory: Inventory,
+	diplomacy: DiplomacyState,
+	current_tick: int
+) -> Dictionary:
+	var c: TradeContract = get_contract(contract_id)
+	if c == null:
+		return {"ok": false, "reason": "Contract not found"}
+	if c.is_settled():
+		return {"ok": false, "reason": "Contract already settled"}
+
+	var s: TradeShipment = get_shipment(c.shipment_id)
+	if s == null:
+		return {"ok": false, "reason": "Shipment not found"}
+
+	# Atomic Goods Delivery
+	if c.buyer_faction_id == FactionCatalog.FACTION_PLAYER:
+		if player_inventory != null:
+			player_inventory.add_resource(c.resource_id, c.resource_amount, "TRADE SHIPMENT DELIVERED", true)
+	else:
+		var buyer_fac: FactionState = diplomacy.factions.get(c.buyer_faction_id, null) if diplomacy != null else null
+		if buyer_fac != null:
+			buyer_fac.resources[c.resource_id] = int(buyer_fac.resources.get(c.resource_id, 0)) + c.resource_amount
+
+	# Atomic Financial Settlement
+	if c.buyer_faction_id == FactionCatalog.FACTION_PLAYER:
+		if player_inventory != null:
+			player_inventory.remove_resource(&"coin", c.total_price, "TRADE CONTRACT SETTLEMENT", true)
+		var seller_fac: FactionState = diplomacy.factions.get(c.seller_faction_id, null) if diplomacy != null else null
+		if seller_fac != null:
+			seller_fac.treasury += c.total_price
+	else:
+		var buyer_fac: FactionState = diplomacy.factions.get(c.buyer_faction_id, null) if diplomacy != null else null
+		if buyer_fac != null:
+			buyer_fac.treasury = maxi(0, buyer_fac.treasury - c.total_price)
+			buyer_fac.release_reserved_treasury(c.total_price)
+		if c.seller_faction_id == FactionCatalog.FACTION_PLAYER and player_inventory != null:
+			player_inventory.add_resource(&"coin", c.total_price, "TRADE CONTRACT PAYMENT RECEIVED")
+
+	s.cargo.clear()
+	s.transition_to(TradeShipment.STATUS_DELIVERED, "Delivered and settled", current_tick)
+	c.transition_to(TradeContract.STATUS_SETTLED, "Delivered and settled", current_tick)
+
+	if diplomacy != null:
+		var buyer_fac: FactionState = diplomacy.factions.get(c.buyer_faction_id, null)
+		var seller_fac: FactionState = diplomacy.factions.get(c.seller_faction_id, null)
+		var buyer_name: String = buyer_fac.display_name if buyer_fac != null else str(c.buyer_faction_id)
+		var seller_name: String = seller_fac.display_name if seller_fac != null else str(c.seller_faction_id)
+		diplomacy.add_chronicle(
+			current_tick,
+			"Trade convoy completed: %s delivered %d %s to %s for %d coins." % [
+				seller_name, c.resource_amount, str(c.resource_id).capitalize(), buyer_name, c.total_price
+			],
+			&"trade_completed"
+		)
+
+	return {
+		"ok": true,
+		"contract_id": c.id,
+		"shipment_id": s.id,
+		"status": c.status
+	}
+
+func cancel_trade_contract(
+	contract_id: int,
+	reason: String,
+	player_inventory: Inventory,
+	diplomacy: DiplomacyState,
+	current_tick: int
+) -> Dictionary:
+	var c: TradeContract = get_contract(contract_id)
+	if c == null:
+		return {"ok": false, "reason": "Contract not found"}
+	if c.status in [TradeContract.STATUS_SETTLED, TradeContract.STATUS_CANCELLED, TradeContract.STATUS_FAILED]:
+		return {"ok": false, "reason": "Contract already in terminal status"}
+
+	var s: TradeShipment = get_shipment(c.shipment_id)
+
+	# 1. Cancel before dispatch / loading
+	if c.status in [TradeContract.STATUS_OFFERED, TradeContract.STATUS_ACCEPTED, TradeContract.STATUS_RESERVED]:
+		if c.seller_faction_id == FactionCatalog.FACTION_PLAYER and player_inventory != null:
+			player_inventory.release_reserved_out(c.resource_id, c.resource_amount)
+		elif diplomacy != null:
+			var seller_fac: FactionState = diplomacy.factions.get(c.seller_faction_id, null)
+			if seller_fac != null:
+				seller_fac.release_reserved_resource(c.resource_id, c.resource_amount)
+
+		if c.buyer_faction_id == FactionCatalog.FACTION_PLAYER and player_inventory != null:
+			player_inventory.release_reserved_out(&"coin", c.total_price)
+			player_inventory.release_reserved_in(c.resource_id, c.resource_amount)
+		elif diplomacy != null:
+			var buyer_fac: FactionState = diplomacy.factions.get(c.buyer_faction_id, null)
+			if buyer_fac != null:
+				buyer_fac.release_reserved_treasury(c.total_price)
+
+		c.transition_to(TradeContract.STATUS_CANCELLED, reason, current_tick)
+		if s != null:
+			s.transition_to(TradeShipment.STATUS_CANCELLED, reason, current_tick)
+
+		return {"ok": true, "contract_id": c.id, "refunded": true}
+
+	# 2. Cancel in transit
+	if s != null and s.is_active():
+		c.transition_to(TradeContract.STATUS_CANCELLED, reason, current_tick)
+		if s.current_region_id == s.origin_region_id:
+			_finalize_returned_shipment(s, player_inventory, diplomacy, current_tick)
+		else:
+			s.transition_to(TradeShipment.STATUS_RETURNING, reason, current_tick)
+			var ret_route: Dictionary = find_route(s.current_region_id, s.origin_region_id)
+			if ret_route["ok"] and ret_route["path"].size() >= 2:
+				var path: Array[StringName] = []
+				for p in ret_route["path"]:
+					path.append(StringName(p))
+				s.route_path = path
+				s.path_index = 0
+				s.segment_ticks_progress = 0.0
+				var seg_route: RegionRoute = get_route_between(path[0], path[1])
+				s.segment_total_ticks = seg_route.travel_ticks if seg_route != null else 60
+			else:
+				_finalize_returned_shipment(s, player_inventory, diplomacy, current_tick)
+
+		return {"ok": true, "contract_id": c.id, "returning": true}
+
+	c.transition_to(TradeContract.STATUS_CANCELLED, reason, current_tick)
+	return {"ok": true, "contract_id": c.id}
+
+func _finalize_returned_shipment(
+	s: TradeShipment,
+	player_inventory: Inventory,
+	diplomacy: DiplomacyState,
+	current_tick: int
+) -> void:
+	var c: TradeContract = get_contract(s.contract_id)
+	if c == null:
+		return
+
+	# Return cargo to seller
+	for res_id in s.cargo:
+		var amt: int = s.cargo[res_id]
+		if amt <= 0:
+			continue
+		if c.seller_faction_id == FactionCatalog.FACTION_PLAYER and player_inventory != null:
+			player_inventory.add_resource(res_id, amt, "TRADE SHIPMENT RETURNED TO STORAGE")
+		elif diplomacy != null:
+			var seller_fac: FactionState = diplomacy.factions.get(c.seller_faction_id, null)
+			if seller_fac != null:
+				seller_fac.resources[res_id] = int(seller_fac.resources.get(res_id, 0)) + amt
+
+	s.cargo.clear()
+	s.transition_to(TradeShipment.STATUS_RETURNED, "Cargo safely returned to origin", current_tick)
+
+	# Release buyer reservations (refund)
+	if c.buyer_faction_id == FactionCatalog.FACTION_PLAYER and player_inventory != null:
+		player_inventory.release_reserved_out(&"coin", c.total_price)
+		player_inventory.release_reserved_in(c.resource_id, c.resource_amount)
+	elif diplomacy != null:
+		var buyer_fac: FactionState = diplomacy.factions.get(c.buyer_faction_id, null)
+		if buyer_fac != null:
+			buyer_fac.release_reserved_treasury(c.total_price)
+
 func serialize() -> Dictionary:
 	var reg_dict: Dictionary = {}
 	for k in regions:
@@ -921,17 +1369,27 @@ func serialize() -> Dictionary:
 	var eng_dict: Dictionary = {}
 	for k in engagements:
 		eng_dict[str(k)] = engagements[k].serialize()
+	var contract_dict: Dictionary = {}
+	for k in contracts:
+		contract_dict[str(k)] = contracts[k].serialize()
+	var shipment_dict: Dictionary = {}
+	for k in shipments:
+		shipment_dict[str(k)] = shipments[k].serialize()
 
 	return {
 		"selected_region_id": str(selected_region_id),
 		"next_army_id": next_army_id,
 		"next_objective_id": next_objective_id,
 		"next_engagement_id": next_engagement_id,
+		"next_contract_id": next_contract_id,
+		"next_shipment_id": next_shipment_id,
 		"regions": reg_dict,
 		"routes": route_arr,
 		"armies": army_dict,
 		"objectives": obj_dict,
-		"engagements": eng_dict
+		"engagements": eng_dict,
+		"contracts": contract_dict,
+		"shipments": shipment_dict
 	}
 
 static func deserialize(data: Dictionary) -> RegionalWorldState:
@@ -940,6 +1398,8 @@ static func deserialize(data: Dictionary) -> RegionalWorldState:
 	state.next_army_id = int(data.get("next_army_id", 1))
 	state.next_objective_id = int(data.get("next_objective_id", 1))
 	state.next_engagement_id = int(data.get("next_engagement_id", 1))
+	state.next_contract_id = int(data.get("next_contract_id", 1))
+	state.next_shipment_id = int(data.get("next_shipment_id", 1))
 
 	state.regions.clear()
 	var raw_reg: Dictionary = data.get("regions", {})
@@ -981,5 +1441,21 @@ static func deserialize(data: Dictionary) -> RegionalWorldState:
 		state.engagements[eng.id] = eng
 		if eng.id >= state.next_engagement_id:
 			state.next_engagement_id = eng.id + 1
+
+	state.contracts.clear()
+	var raw_contracts: Dictionary = data.get("contracts", {})
+	for k in raw_contracts:
+		var c: TradeContract = TradeContract.deserialize(raw_contracts[k])
+		state.contracts[c.id] = c
+		if c.id >= state.next_contract_id:
+			state.next_contract_id = c.id + 1
+
+	state.shipments.clear()
+	var raw_shipments: Dictionary = data.get("shipments", {})
+	for k in raw_shipments:
+		var s: TradeShipment = TradeShipment.deserialize(raw_shipments[k])
+		state.shipments[s.id] = s
+		if s.id >= state.next_shipment_id:
+			state.next_shipment_id = s.id + 1
 
 	return state

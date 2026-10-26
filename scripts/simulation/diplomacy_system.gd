@@ -412,7 +412,8 @@ func resolve_player_response(
 	accept: bool,
 	player_inventory: Inventory,
 	economy: EconomyState,
-	current_tick: int
+	current_tick: int,
+	regional_world: RegionalWorldState = null
 ) -> Dictionary:
 	var prop: DiplomaticProposal = diplomacy.find_proposal(proposal_id)
 	if prop == null:
@@ -462,45 +463,103 @@ func resolve_player_response(
 				var amt: int = int(prop.terms.get("resource_amount", 10))
 				var coins: int = int(prop.terms.get("coin_amount", 15))
 
-				if act == "sell":
-					# AI is selling to Player: Player pays coins, receives goods
-					if player_inventory == null or player_inventory.get_available_outgoing(&"coin") < coins:
-						return {"ok": false, "reason": "Insufficient coins in Town storage to purchase trade goods"}
-					if player_inventory.get_free_capacity() < amt:
-						return {"ok": false, "reason": "Insufficient storage capacity to receive trade goods"}
+				if regional_world != null:
+					var origin: StringName = RegionCatalog.REGION_CROWNWEFT
+					var dest: StringName = RegionCatalog.REGION_CROWNWEFT
+					var buyer: StringName = FactionCatalog.FACTION_PLAYER
+					var seller: StringName = from_fac.id
 
-					player_inventory.remove_resource(&"coin", coins, "DIPLOMACY: TRADE COIN PAYMENT")
-					from_fac.treasury += coins
-					from_fac.resources[res_id] = maxi(0, int(from_fac.resources.get(res_id, 0)) - amt)
-					player_inventory.add_resource(res_id, amt, "DIPLOMACY: TRADE IMPORT")
+					if act == "sell":
+						origin = _get_faction_capital_region(from_fac.id)
+						dest = RegionCatalog.REGION_CROWNWEFT
+						buyer = FactionCatalog.FACTION_PLAYER
+						seller = from_fac.id
+					else:
+						origin = RegionCatalog.REGION_CROWNWEFT
+						dest = _get_faction_capital_region(from_fac.id)
+						buyer = from_fac.id
+						seller = FactionCatalog.FACTION_PLAYER
 
+					var contract: TradeContract = regional_world.create_trade_contract(
+						buyer,
+						seller,
+						res_id,
+						amt,
+						coins,
+						origin,
+						dest,
+						current_tick
+					)
+					if contract == null:
+						return {"ok": false, "reason": "Failed to create trade contract"}
+
+					var accept_res: Dictionary = regional_world.accept_trade_contract(
+						contract.id,
+						player_inventory,
+						diplomacy,
+						current_tick
+					)
+					if not accept_res.get("ok", false):
+						return accept_res
+
+					rel.modify_trust(10.0)
+					rel.modify_cooperation(15.0)
+					from_fac.add_memory(
+						current_tick,
+						FactionCatalog.FACTION_PLAYER,
+						from_fac.id,
+						&"trade_dispatched",
+						float(coins),
+						"Trade convoy dispatched to exchange %d %s for %d coins." % [amt, str(res_id), coins],
+						600
+					)
+					diplomacy.add_chronicle(
+						current_tick,
+						"Trade contract formed with %s: caravan dispatched (%d %s for %d coins)." % [
+							from_fac.display_name, amt, str(res_id).capitalize(), coins
+						],
+						&"trade_accepted"
+					)
 				else:
-					# AI is buying from Player: Player provides goods, receives coins
-					if player_inventory == null or player_inventory.get_available_outgoing(res_id) < amt:
-						return {"ok": false, "reason": "Insufficient goods in storage to fulfill trade sale"}
-					if player_inventory.get_free_capacity() < coins:
-						return {"ok": false, "reason": "Insufficient storage capacity to receive coin payment"}
+					if act == "sell":
+						# AI is selling to Player: Player pays coins, receives goods
+						if player_inventory == null or player_inventory.get_available_outgoing(&"coin") < coins:
+							return {"ok": false, "reason": "Insufficient coins in Town storage to purchase trade goods"}
+						if player_inventory.get_free_capacity() < amt:
+							return {"ok": false, "reason": "Insufficient storage capacity to receive trade goods"}
 
-					player_inventory.remove_resource(res_id, amt, "DIPLOMACY: TRADE EXPORT")
-					from_fac.resources[res_id] = int(from_fac.resources.get(res_id, 0)) + amt
-					from_fac.treasury = maxi(0, from_fac.treasury - coins)
-					player_inventory.add_resource(&"coin", coins, "DIPLOMACY: TRADE COIN EARNED")
+						player_inventory.remove_resource(&"coin", coins, "DIPLOMACY: TRADE COIN PAYMENT")
+						from_fac.treasury += coins
+						from_fac.resources[res_id] = maxi(0, int(from_fac.resources.get(res_id, 0)) - amt)
+						player_inventory.add_resource(res_id, amt, "DIPLOMACY: TRADE IMPORT")
 
-				rel.modify_trust(10.0)
-				rel.modify_cooperation(15.0)
+					else:
+						# AI is buying from Player: Player provides goods, receives coins
+						if player_inventory == null or player_inventory.get_available_outgoing(res_id) < amt:
+							return {"ok": false, "reason": "Insufficient goods in storage to fulfill trade sale"}
+						if player_inventory.get_free_capacity() < coins:
+							return {"ok": false, "reason": "Insufficient storage capacity to receive coin payment"}
 
-				from_fac.add_memory(
-					current_tick,
-					FactionCatalog.FACTION_PLAYER,
-					from_fac.id,
-					&"trade_completed",
-					float(coins),
-					"Honoured trade agreement and exchanged valuable commodities.",
-					600
-				)
-				diplomacy.add_chronicle(current_tick, "Trade concluded with %s for %d %s (%d coins)." % [
-					from_fac.display_name, amt, str(res_id).capitalize(), coins
-				], &"trade_accepted")
+						player_inventory.remove_resource(res_id, amt, "DIPLOMACY: TRADE EXPORT")
+						from_fac.resources[res_id] = int(from_fac.resources.get(res_id, 0)) + amt
+						from_fac.treasury = maxi(0, from_fac.treasury - coins)
+						player_inventory.add_resource(&"coin", coins, "DIPLOMACY: TRADE COIN EARNED")
+
+					rel.modify_trust(10.0)
+					rel.modify_cooperation(15.0)
+
+					from_fac.add_memory(
+						current_tick,
+						FactionCatalog.FACTION_PLAYER,
+						from_fac.id,
+						&"trade_completed",
+						float(coins),
+						"Honoured trade agreement and exchanged valuable commodities.",
+						600
+					)
+					diplomacy.add_chronicle(current_tick, "Trade concluded with %s for %d %s (%d coins)." % [
+						from_fac.display_name, amt, str(res_id).capitalize(), coins
+					], &"trade_accepted")
 
 			DiplomaticProposal.TYPE_ALLIANCE:
 				var duration: int = int(prop.terms.get("duration_ticks", 600))
@@ -759,4 +818,17 @@ func _find_war_by_id(diplomacy: DiplomacyState, war_id: int) -> WarState:
 		if w.id == war_id:
 			return w
 	return null
+
+func _get_faction_capital_region(faction_id: StringName) -> StringName:
+	match faction_id:
+		FactionCatalog.FACTION_PLAYER:
+			return RegionCatalog.REGION_CROWNWEFT
+		FactionCatalog.FACTION_VALEN:
+			return RegionCatalog.REGION_VALEN
+		FactionCatalog.FACTION_OLD_GROVE:
+			return RegionCatalog.REGION_OLD_GROVE
+		FactionCatalog.FACTION_IRONPEAK:
+			return RegionCatalog.REGION_IRONPEAK
+		_:
+			return RegionCatalog.REGION_CROWNWEFT
 

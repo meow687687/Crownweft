@@ -982,6 +982,7 @@ func _simulation_tick() -> void:
 		regional_world.tick_regional_armies(current_tick, diplomacy)
 		regional_world.detect_and_resolve_engagements(diplomacy, current_tick)
 		regional_world.update_campaign_objectives(diplomacy, current_tick)
+		regional_world.tick_regional_trade_shipments(current_tick, diplomacy, main_inv)
 
 	# Periodic check for social status advancement
 	if current_tick % 20 == 0:
@@ -1442,7 +1443,7 @@ func _on_proposal_response(proposal_id: int, accept: bool) -> void:
 	if diplomacy == null or diplomacy_system == null:
 		return
 	var main_inv: Inventory = buildings[0].inventory if not buildings.is_empty() else null
-	var res: Dictionary = diplomacy_system.resolve_player_response(diplomacy, proposal_id, accept, main_inv, economy, current_tick)
+	var res: Dictionary = diplomacy_system.resolve_player_response(diplomacy, proposal_id, accept, main_inv, economy, current_tick, regional_world)
 	if res.get("ok", false):
 		var msg: String = "Diplomatic proposal accepted." if accept else "Diplomatic proposal refused."
 		if ui != null:
@@ -1593,6 +1594,8 @@ func _update_world_map_ui() -> void:
 		"armies": regional_world.armies,
 		"objectives": regional_world.objectives,
 		"engagements": regional_world.engagements,
+		"contracts": regional_world.contracts,
+		"shipments": regional_world.shipments,
 		"selected_region_id": regional_world.selected_region_id,
 		"diplomacy": diplomacy,
 		"active_wars": diplomacy.active_wars if diplomacy != null else []

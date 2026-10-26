@@ -9,6 +9,8 @@ var doctrine: StringName = &"communal_labor"
 
 var treasury: int = 50
 var resources: Dictionary = {}
+var reserved_treasury: int = 0
+var reserved_resources: Dictionary = {}
 var military_power: int = 20
 
 var active_goals: Array[StringName] = []
@@ -99,10 +101,51 @@ func clean_expired_treaties(current_tick: int) -> void:
 			valid.append(t)
 	active_treaties = valid
 
+func get_available_treasury() -> int:
+	return maxi(0, treasury - reserved_treasury)
+
+func reserve_treasury(amount: int) -> bool:
+	if amount <= 0:
+		return false
+	if get_available_treasury() < amount:
+		return false
+	reserved_treasury += amount
+	return true
+
+func release_reserved_treasury(amount: int) -> void:
+	if amount <= 0:
+		return
+	reserved_treasury = maxi(0, reserved_treasury - amount)
+
+func get_available_resource(res_id: StringName) -> int:
+	return maxi(0, int(resources.get(res_id, 0)) - int(reserved_resources.get(res_id, 0)))
+
+func reserve_resource(res_id: StringName, amount: int) -> bool:
+	if amount <= 0:
+		return false
+	if get_available_resource(res_id) < amount:
+		return false
+	reserved_resources[res_id] = int(reserved_resources.get(res_id, 0)) + amount
+	return true
+
+func release_reserved_resource(res_id: StringName, amount: int) -> void:
+	if amount <= 0:
+		return
+	var current: int = int(reserved_resources.get(res_id, 0))
+	var new_val: int = maxi(0, current - amount)
+	if new_val == 0:
+		reserved_resources.erase(res_id)
+	else:
+		reserved_resources[res_id] = new_val
+
 func serialize() -> Dictionary:
 	var goals_arr: Array = []
 	for g in active_goals:
 		goals_arr.append(str(g))
+	var res_res_dict: Dictionary = {}
+	for k in reserved_resources:
+		res_res_dict[str(k)] = int(reserved_resources[k])
+
 	return {
 		"id": id,
 		"display_name": display_name,
@@ -111,6 +154,8 @@ func serialize() -> Dictionary:
 		"doctrine": doctrine,
 		"treasury": treasury,
 		"resources": resources.duplicate(true),
+		"reserved_treasury": reserved_treasury,
+		"reserved_resources": res_res_dict,
 		"military_power": military_power,
 		"active_goals": goals_arr,
 		"memories": memories.duplicate(true),
@@ -130,6 +175,10 @@ static func deserialize(dict: Dictionary) -> FactionState:
 	f.doctrine = dict.get("doctrine", &"communal_labor")
 	f.treasury = int(dict.get("treasury", 50))
 	f.resources = (dict.get("resources", {}) as Dictionary).duplicate(true)
+	f.reserved_treasury = int(dict.get("reserved_treasury", 0))
+	var raw_rr: Dictionary = dict.get("reserved_resources", {})
+	for k in raw_rr:
+		f.reserved_resources[StringName(k)] = int(raw_rr[k])
 	f.military_power = int(dict.get("military_power", 20))
 	
 	f.active_goals.clear()
