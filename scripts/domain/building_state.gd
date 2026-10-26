@@ -8,6 +8,19 @@ enum Status {
 	DESTROYED
 }
 
+const PRIORITY_MIN: int = 1
+const PRIORITY_MAX: int = 5
+const PRIORITY_DEFAULT: int = 3
+
+static func get_priority_name(p: int) -> String:
+	match p:
+		1: return "Low (1)"
+		2: return "Below Normal (2)"
+		3: return "Normal (3)"
+		4: return "High (4)"
+		5: return "Urgent (5)"
+		_: return "Normal (3)"
+
 @export var entity_id: int = 0
 @export var definition_id: StringName = &""
 var inventory: Inventory = null
@@ -16,6 +29,7 @@ var enabled: bool = true
 var production_progress: int = 0
 var production_work_accum: float = 0.0
 var current_block_reason: StringName = &""
+@export var work_priority: int = PRIORITY_DEFAULT
 var tile_origin: Vector2i = Vector2i.ZERO
 var health: int = 100
 var max_health: int = 100

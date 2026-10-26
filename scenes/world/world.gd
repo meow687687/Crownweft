@@ -23,6 +23,7 @@ var citizens: Array[CitizenState] = []
 var military_units: Array[MilitaryUnitState] = []
 var selected_units: Array[MilitaryUnitState] = []
 var next_entity_id: int = 1
+var auto_staffing_enabled: bool = false
 
 # Simulation timing
 var sim_speed_multiplier: float = 1.0 # 0.0 = pause, 1.0 = 1x, 2.0 = 2x, 3.0 = 3x
@@ -123,6 +124,11 @@ func _setup_signals() -> void:
 		renderer.queue_redraw()
 	)
 	ui.worker_assignment_changed.connect(_on_worker_assignment_changed)
+	ui.building_priority_changed.connect(_on_building_priority_changed)
+	ui.unassign_specific_worker_requested.connect(_on_unassign_specific_worker)
+	ui.toggle_workforce_panel_requested.connect(_on_toggle_workforce_panel)
+	ui.auto_staffing_toggled.connect(_on_auto_staffing_toggled)
+	ui.citizen_selected_from_panel.connect(_on_citizen_selected_from_panel)
 	ui.recruit_unit_requested.connect(_on_recruit_unit_requested)
 	ui.tax_level_cycled.connect(_on_tax_level_cycled)
 	ui.save_game_requested.connect(_on_save_game)
@@ -270,6 +276,13 @@ func _find_inventory_by_id(inventory_id: int) -> Inventory:
 	return null
 
 func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo:
+		var kb_event: InputEventKey = event as InputEventKey
+		if kb_event.keycode == KEY_W and active_build_id == &"":
+			_on_toggle_workforce_panel()
+			get_viewport().set_input_as_handled()
+			return
+
 	if active_build_id != &"" and BuildingCatalog.is_building_resizable(active_build_id):
 		if event is InputEventKey and event.pressed:
 			var kb: InputEventKey = event as InputEventKey
@@ -295,12 +308,16 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var mb: InputEventMouseButton = event as InputEventMouseButton
 		
-		# Protection: Ignore clicks if mouse is over top HUD or bottom palette
+		# Protection: Ignore clicks if mouse is over top HUD, bottom palette, inspector, or workforce panel
 		var mouse_screen: Vector2 = get_viewport().get_mouse_position()
 		var screen_size: Vector2 = get_viewport().get_visible_rect().size
 		if mouse_screen.y < 104.0 or mouse_screen.y > (screen_size.y - 142.0):
 			return
-		if ui.panel_inspector != null and ui.panel_inspector.visible and mouse_screen.x > (screen_size.x - 320.0):
+		if ui != null and ui.panel_workforce != null and ui.panel_workforce.visible:
+			var wf_rect := Rect2(screen_size * 0.5 - Vector2(330, 230), Vector2(660, 460))
+			if wf_rect.has_point(mouse_screen):
+				return
+		if ui != null and ui.panel_inspector != null and ui.panel_inspector.visible and mouse_screen.x > (screen_size.x - 350.0):
 			return
 			
 		var mouse_world: Vector2 = get_global_mouse_position()
@@ -425,10 +442,12 @@ func _on_worker_assignment_changed(delta: int) -> void:
 				available = citizen
 				break
 		if selected_building.assigned_workers >= max_slots:
-			ui.show_toast("This building has no open %s slots" % ("builder" if selected_building.is_under_construction() else "worker"), true)
+			if ui != null:
+				ui.show_toast("This building has no open %s slots" % ("builder" if selected_building.is_under_construction() else "worker"), true)
 			return
 		if available == null:
-			ui.show_toast("No unassigned workers available", true)
+			if ui != null:
+				ui.show_toast("No unassigned workers available", true)
 			return
 		selected_building.assigned_workers += 1
 		available.workplace_id = selected_building.entity_id
@@ -445,8 +464,10 @@ func _on_worker_assignment_changed(delta: int) -> void:
 				citizen.target_tile = citizen.position_tile
 				selected_building.assigned_workers = maxi(0, selected_building.assigned_workers - 1)
 				break
-	ui.show_building_details(selected_building, def_info, _count_workers_at_building(selected_building))
-	renderer.queue_redraw()
+	_update_building_inspector()
+	_update_workforce_panel()
+	if renderer != null:
+		renderer.queue_redraw()
 
 func _worker_role_for_building(building_id: StringName) -> StringName:
 	match building_id:
@@ -467,12 +488,15 @@ func _select_building_at(tile_coord: Vector2i) -> void:
 			selected_building = b
 			break
 			
-	renderer.selected_building = selected_building
+	if renderer != null:
+		renderer.selected_building = selected_building
 	if selected_building != null:
-		ui.show_building_details(selected_building, defs.get(selected_building.definition_id, {}))
+		_update_building_inspector()
 	else:
-		ui.show_building_details(null, {})
-	renderer.queue_redraw()
+		if ui != null:
+			ui.show_building_details(null, {})
+	if renderer != null:
+		renderer.queue_redraw()
 
 func can_place_building_at(b_id: StringName, coord: Vector2i, custom_footprint: Vector2i = Vector2i.ZERO) -> Dictionary:
 	var defs: Dictionary = BuildingCatalog.get_all_defs()
@@ -675,7 +699,8 @@ func _on_building_completed(building: BuildingState) -> void:
 				pathfinding.set_solid(c, true)
 				
 	if selected_building == building and ui != null:
-		ui.show_building_details(building, def_info, _count_workers_at_building(building))
+		_update_building_inspector()
+	_update_workforce_panel()
 	if renderer != null:
 		renderer.queue_redraw()
 	if ui != null:
@@ -828,6 +853,10 @@ func _simulation_tick() -> void:
 					if building.assigned_workers >= 2:
 						break
 
+	# Auto-staffing
+	if auto_staffing_enabled and current_tick % 12 == 0:
+		auto_staff_workplaces()
+
 	# Update housing assignments, resting, and energy recovery
 	_update_housing_and_rest()
 
@@ -889,6 +918,10 @@ func _simulation_tick() -> void:
 	_update_ui_state(needs_report)
 	if selected_citizen != null:
 		_update_citizen_inspector()
+	if selected_building != null:
+		_update_building_inspector()
+	if ui != null and ui.is_workforce_panel_visible():
+		_update_workforce_panel()
 	renderer.queue_redraw()
 
 func _update_worker_movement() -> void:
@@ -1238,8 +1271,7 @@ func _update_ui_state(needs_report: Dictionary) -> void:
 		ui.update_economy(economy.get_tax_level_name(), economy.approval)
 	
 	if selected_building != null:
-		var defs: Dictionary = BuildingCatalog.get_all_defs()
-		ui.show_building_details(selected_building, defs.get(selected_building.definition_id, {}), _count_workers_at_building(selected_building))
+		_update_building_inspector()
 
 func _on_tax_level_cycled() -> void:
 	if economy == null:
@@ -1263,7 +1295,9 @@ func _on_save_game() -> void:
 		military_units,
 		job_board,
 		current_tick,
-		sim_speed_multiplier
+		sim_speed_multiplier,
+		SaveService.DEFAULT_SAVE_PATH,
+		auto_staffing_enabled
 	)
 	if success:
 		ui.show_toast("Realm state saved successfully", false)
@@ -1306,6 +1340,7 @@ func _on_load_game() -> void:
 
 	current_tick = loaded["meta"].get("current_tick", 0)
 	sim_speed_multiplier = loaded["meta"].get("sim_speed", 1.0)
+	auto_staffing_enabled = loaded["meta"].get("auto_staffing_enabled", false)
 	
 	pathfinding.initialize_from_world(world_state)
 	var defs: Dictionary = BuildingCatalog.get_all_defs()
@@ -1337,4 +1372,436 @@ func _on_load_game() -> void:
 	renderer.queue_redraw()
 	_update_ui_state({"fed": 0, "hungry": 0, "at_risk": 0})
 	ui.update_economy(economy.get_tax_level_name(), economy.approval)
+	_update_workforce_panel()
 	ui.show_toast("Realm loaded successfully", false)
+
+func _update_building_inspector() -> void:
+	if selected_building == null or ui == null:
+		return
+	var defs: Dictionary = BuildingCatalog.get_all_defs()
+	var def_info: Dictionary = defs.get(selected_building.definition_id, {})
+	var workers_present: int = _count_workers_at_building(selected_building)
+	var diag: Dictionary = get_building_diagnostic_details(selected_building)
+	ui.show_building_details(selected_building, def_info, workers_present, diag)
+
+func _update_workforce_panel() -> void:
+	if ui != null:
+		ui.update_workforce_panel(get_workforce_summary(), get_workforce_citizens_data(), auto_staffing_enabled)
+
+func _on_building_priority_changed(delta: int) -> void:
+	if selected_building == null:
+		return
+	var new_pri: int = clampi(selected_building.work_priority + delta, BuildingState.PRIORITY_MIN, BuildingState.PRIORITY_MAX)
+	set_building_priority(selected_building, new_pri)
+	if ui != null:
+		ui.show_toast("Building priority set to %d (%s)" % [new_pri, BuildingState.get_priority_name(new_pri)], false)
+
+func _on_unassign_specific_worker(citizen_id: int) -> void:
+	var citizen: CitizenState = _find_citizen_by_id(citizen_id)
+	if citizen != null:
+		unassign_citizen(citizen)
+		if ui != null:
+			ui.show_toast("Citizen #%d unassigned" % citizen_id, false)
+
+func _on_toggle_workforce_panel() -> void:
+	if ui != null:
+		ui.toggle_workforce_panel()
+		if ui.is_workforce_panel_visible():
+			_update_workforce_panel()
+
+func _on_auto_staffing_toggled(enabled: bool) -> void:
+	auto_staffing_enabled = enabled
+	if ui != null:
+		ui.show_toast("Auto-Staffing %s" % ("Enabled" if auto_staffing_enabled else "Disabled"), false)
+	if auto_staffing_enabled:
+		auto_staff_workplaces()
+	_update_workforce_panel()
+
+func _on_citizen_selected_from_panel(citizen_id: int) -> void:
+	var c: CitizenState = _find_citizen_by_id(citizen_id)
+	if c == null:
+		return
+	selected_citizen = c
+	selected_building = null
+	selected_units.clear()
+	if renderer != null:
+		renderer.selected_building = null
+		renderer.selected_units = selected_units
+		renderer.queue_redraw()
+	_update_citizen_inspector()
+	if camera != null:
+		camera.position = Vector2(c.position_tile.x * 16.0, c.position_tile.y * 16.0)
+
+func get_workforce_summary() -> Dictionary:
+	var total: int = citizens.size()
+	var employed: int = 0
+	var unassigned: int = 0
+	var travelling: int = 0
+	var working: int = 0
+	var hauling: int = 0
+	var resting: int = 0
+	var blocked: int = 0
+	var builders: int = 0
+
+	for c in citizens:
+		if c.is_resting:
+			resting += 1
+		if c.current_block_reason != &"":
+			blocked += 1
+		if c.role_id == &"builder":
+			builders += 1
+		elif c.role_id == &"hauler":
+			hauling += 1
+
+		if c.workplace_id > 0 or c.role_id == &"hauler":
+			employed += 1
+		elif c.role_id == &"unassigned":
+			unassigned += 1
+
+		if not c.is_resting and c.workplace_id > 0 and c.role_id != &"hauler":
+			var wp: BuildingState = _find_building_by_entity_id(c.workplace_id)
+			if wp != null and _is_adjacent_to_building(c.position_tile, wp, wp.get_footprint()) and c.move_state == CitizenState.MoveState.IDLE:
+				working += 1
+			elif c.move_state == CitizenState.MoveState.MOVING:
+				travelling += 1
+
+	return {
+		"total": total,
+		"employed": employed,
+		"unassigned": unassigned,
+		"travelling": travelling,
+		"working": working,
+		"hauling": hauling,
+		"resting": resting,
+		"blocked": blocked,
+		"builders": builders
+	}
+
+func get_workforce_citizens_data() -> Array[Dictionary]:
+	var list: Array[Dictionary] = []
+	for c in citizens:
+		var wp: BuildingState = _find_building_by_entity_id(c.workplace_id) if c.workplace_id > 0 else null
+		var wp_str: String = "None"
+		if wp != null:
+			var wp_def = BuildingCatalog.get_all_defs().get(wp.definition_id, {})
+			wp_str = "%s (#%d)" % [wp_def.get("display_name", str(wp.definition_id)), wp.entity_id]
+		elif c.role_id == &"hauler":
+			wp_str = "Logistics"
+
+		var is_working: bool = false
+		var is_travelling: bool = false
+		if not c.is_resting and wp != null and c.role_id != &"hauler":
+			if _is_adjacent_to_building(c.position_tile, wp, wp.get_footprint()) and c.move_state == CitizenState.MoveState.IDLE:
+				is_working = true
+			elif c.move_state == CitizenState.MoveState.MOVING:
+				is_travelling = true
+
+		var state_str: String = "Idle"
+		if c.is_resting:
+			state_str = "Resting"
+		elif c.current_block_reason != &"":
+			state_str = "Blocked"
+		elif is_working:
+			state_str = "Working"
+		elif is_travelling:
+			state_str = "Travelling"
+		elif c.role_id == &"hauler":
+			state_str = "Hauling" if c.carried_amount > 0 else "Hauler Idle"
+
+		var prim_skill: StringName = &"farming"
+		if wp != null:
+			prim_skill = &"masonry" if wp.is_under_construction() else ProductionSystem.get_relevant_skill(wp.definition_id)
+		elif c.role_id == &"hauler":
+			prim_skill = &"hauling"
+		else:
+			var best_s: StringName = CitizenState.SKILL_NAMES[0]
+			var best_v: float = -1.0
+			for s in CitizenState.SKILL_NAMES:
+				var v = c.get_skill(s)
+				if v > best_v:
+					best_v = v
+					best_s = s
+			prim_skill = best_s
+
+		list.append({
+			"id": c.id,
+			"role": c.role_id,
+			"workplace_id": c.workplace_id,
+			"workplace_str": wp_str,
+			"is_working": is_working,
+			"is_travelling": is_travelling,
+			"is_resting": c.is_resting,
+			"is_blocked": c.current_block_reason != &"",
+			"state_str": state_str,
+			"energy": int(roundf(c.energy)),
+			"primary_skill_name": prim_skill,
+			"primary_skill_val": int(roundf(c.get_skill(prim_skill)))
+		})
+	return list
+
+func get_assigned_citizens_for_building(building: BuildingState) -> Array[Dictionary]:
+	var list: Array[Dictionary] = []
+	if building == null:
+		return list
+	var relevant_skill: StringName = &"masonry" if building.is_under_construction() else ProductionSystem.get_relevant_skill(building.definition_id)
+	for c in citizens:
+		if c.workplace_id == building.entity_id:
+			var is_at_work: bool = not c.is_resting and _is_adjacent_to_building(c.position_tile, building, building.get_footprint()) and c.move_state == CitizenState.MoveState.IDLE
+			var state_str: String = "At Work" if is_at_work else ("Travelling" if c.move_state == CitizenState.MoveState.MOVING else ("Resting" if c.is_resting else "Idle"))
+			if c.current_block_reason != &"":
+				state_str = "Blocked"
+			var s_val: int = int(roundf(c.get_skill(relevant_skill))) if relevant_skill != &"" else 50
+			var s_fac: float = c.get_skill_factor(relevant_skill) if relevant_skill != &"" else 1.0
+			list.append({
+				"id": c.id,
+				"role": c.role_id,
+				"state_str": state_str,
+				"skill_name": relevant_skill,
+				"skill_val": s_val,
+				"skill_factor": s_fac
+			})
+	return list
+
+func unassign_citizen(citizen: CitizenState) -> void:
+	if citizen == null or citizen.workplace_id <= 0:
+		return
+	var wp: BuildingState = _find_building_by_entity_id(citizen.workplace_id)
+	if wp != null:
+		wp.assigned_workers = maxi(0, wp.assigned_workers - 1)
+	citizen.workplace_id = 0
+	citizen.role_id = &"unassigned"
+	citizen.path.clear()
+	citizen.move_state = CitizenState.MoveState.IDLE
+	citizen.target_tile = citizen.position_tile
+	if selected_building != null and selected_building == wp:
+		_update_building_inspector()
+	_update_workforce_panel()
+	if renderer != null:
+		renderer.queue_redraw()
+
+func set_building_priority(building: BuildingState, new_priority: int) -> void:
+	if building == null:
+		return
+	building.work_priority = clampi(new_priority, BuildingState.PRIORITY_MIN, BuildingState.PRIORITY_MAX)
+	if selected_building == building:
+		_update_building_inspector()
+
+func auto_staff_workplaces() -> void:
+	var candidate_workplaces: Array[BuildingState] = []
+	for b in buildings:
+		if b.is_under_construction():
+			if b.has_all_construction_materials() and b.assigned_workers < 3:
+				candidate_workplaces.append(b)
+		elif b.status == BuildingState.Status.ACTIVE:
+			var max_slots: int = BuildingCatalog.get_worker_slots_for_footprint(b.definition_id, b.get_footprint())
+			if b.assigned_workers < max_slots:
+				candidate_workplaces.append(b)
+
+	if candidate_workplaces.is_empty():
+		return
+
+	candidate_workplaces.sort_custom(func(a: BuildingState, b: BuildingState) -> bool:
+		if a.work_priority != b.work_priority:
+			return a.work_priority > b.work_priority
+		var a_max: float = 3.0 if a.is_under_construction() else float(BuildingCatalog.get_worker_slots_for_footprint(a.definition_id, a.get_footprint()))
+		var b_max: float = 3.0 if b.is_under_construction() else float(BuildingCatalog.get_worker_slots_for_footprint(b.definition_id, b.get_footprint()))
+		var a_ratio: float = float(a.assigned_workers) / maxf(1.0, a_max)
+		var b_ratio: float = float(b.assigned_workers) / maxf(1.0, b_max)
+		if not is_equal_approx(a_ratio, b_ratio):
+			return a_ratio < b_ratio
+		return a.entity_id < b.entity_id
+	)
+
+	for workplace in candidate_workplaces:
+		var max_slots: int = 3 if workplace.is_under_construction() else BuildingCatalog.get_worker_slots_for_footprint(workplace.definition_id, workplace.get_footprint())
+		var needed: int = max_slots - workplace.assigned_workers
+		if needed <= 0:
+			continue
+
+		var relevant_skill: StringName = &"masonry" if workplace.is_under_construction() else ProductionSystem.get_relevant_skill(workplace.definition_id)
+
+		for _i in range(needed):
+			var best_citizen: CitizenState = null
+			var best_score: float = -999999.0
+
+			for citizen in citizens:
+				if citizen.role_id != &"unassigned" or citizen.workplace_id > 0 or citizen.is_resting:
+					continue
+				var s_val: float = citizen.get_skill(relevant_skill) if relevant_skill != &"" else 50.0
+				var dist: float = float(absi(citizen.position_tile.x - workplace.tile_origin.x) + absi(citizen.position_tile.y - workplace.tile_origin.y))
+				var score: float = s_val * 10.0 - dist
+				if score > best_score:
+					best_score = score
+					best_citizen = citizen
+
+			if best_citizen == null:
+				break
+
+			workplace.assigned_workers += 1
+			best_citizen.workplace_id = workplace.entity_id
+			best_citizen.role_id = &"builder" if workplace.is_under_construction() else _worker_role_for_building(workplace.definition_id)
+			best_citizen.path.clear()
+			best_citizen.move_state = CitizenState.MoveState.MOVING
+
+func get_building_production_chain(building: BuildingState) -> Dictionary:
+	if building == null:
+		return {}
+
+	var real_status: String = "ACTIVE"
+	var primary_blocker: String = ""
+	var secondary_blocker: String = ""
+	var upstream_summary: String = ""
+	var downstream_summary: String = ""
+
+	if building.is_under_construction():
+		real_status = "UNDER_CONSTRUCTION" if building.status == BuildingState.Status.UNDER_CONSTRUCTION else "PLANNED"
+		if building.construction_block_reason != &"":
+			primary_blocker = str(building.construction_block_reason)
+		elif not building.has_all_construction_materials():
+			primary_blocker = "WAITING_MATERIALS"
+		elif building.assigned_workers == 0:
+			primary_blocker = "NO_BUILDERS"
+		elif _count_workers_at_building(building) == 0:
+			primary_blocker = "WAITING_FOR_BUILDERS"
+
+		var missing: Dictionary = building.get_outstanding_materials()
+		for res_id in building.construction_cost:
+			var req: int = building.construction_cost[res_id]
+			var deliv: int = building.get_delivered_materials().get(res_id, 0)
+			var in_transit: int = 0
+			for job: HaulJob in job_board.jobs.values():
+				if job.destination_inventory_id == building.construction_inventory.owner_id and job.resource_id == res_id and job.status in [HaulJob.Status.ASSIGNED, HaulJob.Status.IN_TRANSIT]:
+					in_transit += job.amount
+			upstream_summary += "    • %s: %d/%d delivered | In transit: %d | Missing: %d\n" % [
+				str(res_id).capitalize(), deliv, req, in_transit, missing.get(res_id, 0)
+			]
+
+		return {
+			"real_status": real_status,
+			"primary_blocker": primary_blocker,
+			"secondary_blocker": secondary_blocker,
+			"upstream_summary": upstream_summary.strip_edges(),
+			"downstream_summary": "Construction site does not produce outputs."
+		}
+
+	var def_info: Dictionary = BuildingCatalog.get_all_defs().get(building.definition_id, {})
+	var recipe: RecipeDef = def_info.get("recipe", null)
+	var max_slots: int = BuildingCatalog.get_worker_slots_for_footprint(building.definition_id, building.get_footprint())
+	var workers_present: int = _count_workers_at_building(building)
+
+	if building.current_block_reason != &"":
+		primary_blocker = str(building.current_block_reason)
+		real_status = "BLOCKED"
+	elif building.assigned_workers == 0 and max_slots > 0:
+		primary_blocker = "UNSTAFFED"
+		real_status = "UNSTAFFED"
+	elif workers_present == 0 and building.assigned_workers > 0:
+		primary_blocker = "WAITING_FOR_WORKERS"
+		real_status = "WAITING_FOR_WORKERS"
+	elif recipe != null:
+		real_status = "PRODUCING"
+
+	for c in citizens:
+		if c.workplace_id == building.entity_id and c.is_resting:
+			secondary_blocker = "Worker resting at home"
+			break
+
+	if recipe != null and not recipe.inputs.is_empty():
+		for in_res in recipe.inputs:
+			var req: int = recipe.inputs[in_res]
+			var have: int = building.inventory.get_quantity(in_res)
+			var reserved_in: int = building.inventory.get_reserved_in(in_res)
+			var in_transit: int = 0
+			for job: HaulJob in job_board.jobs.values():
+				if job.destination_inventory_id == building.inventory.owner_id and job.resource_id == in_res and job.status in [HaulJob.Status.ASSIGNED, HaulJob.Status.IN_TRANSIT]:
+					in_transit += job.amount
+
+			var supplier_info: String = "No supplier"
+			for other_b in buildings:
+				if other_b != building and other_b.status == BuildingState.Status.ACTIVE:
+					var other_def = BuildingCatalog.get_all_defs().get(other_b.definition_id, {})
+					var other_recipe: RecipeDef = other_def.get("recipe", null)
+					if other_recipe != null and other_recipe.outputs.has(in_res):
+						supplier_info = "%s (#%d): %d stored" % [other_def.get("display_name", str(other_b.definition_id)), other_b.entity_id, other_b.inventory.get_quantity(in_res)]
+						break
+
+			var input_state: String = "READY" if have >= req else ("IN_TRANSIT" if (in_transit > 0 or reserved_in > 0) else "WAITING_SUPPLY")
+			upstream_summary += "    • %s: Stored: %d/%d (State: %s) | In transit: %d | Source: %s\n" % [
+				str(in_res).capitalize(), have, req, input_state, in_transit, supplier_info
+			]
+	else:
+		if def_info.has("harvest_deposit"):
+			upstream_summary = "    • Resource Source: Natural %s deposit" % ("forest" if def_info["harvest_deposit"] == &"trees" else "rock")
+		else:
+			upstream_summary = "    • No raw inputs required"
+
+	if recipe != null and not recipe.outputs.is_empty():
+		for out_res in recipe.outputs:
+			var have_out: int = building.inventory.get_quantity(out_res)
+			var in_transit_out: int = 0
+			for job: HaulJob in job_board.jobs.values():
+				if job.source_inventory_id == building.inventory.owner_id and job.resource_id == out_res and job.status in [HaulJob.Status.ASSIGNED, HaulJob.Status.IN_TRANSIT]:
+					in_transit_out += job.amount
+
+			var consumer_info: String = "None"
+			for other_b in buildings:
+				if other_b != building and other_b.status == BuildingState.Status.ACTIVE:
+					if other_b.inventory.accepts(out_res):
+						var other_def = BuildingCatalog.get_all_defs().get(other_b.definition_id, {})
+						consumer_info = "%s (#%d): %d free space" % [
+							other_def.get("display_name", str(other_b.definition_id)),
+							other_b.entity_id,
+							other_b.inventory.get_free_capacity()
+						]
+						break
+
+			var out_state: String = "FULL" if building.inventory.get_free_capacity() == 0 else ("HAULING" if in_transit_out > 0 else "STORING")
+			downstream_summary += "    • %s: Stored: %d (State: %s) | Hauling away: %d | Consumer: %s\n" % [
+				str(out_res).capitalize(), have_out, out_state, in_transit_out, consumer_info
+			]
+	else:
+		downstream_summary = "    • Storage / Service building — receives incoming goods"
+
+	return {
+		"real_status": real_status,
+		"primary_blocker": primary_blocker,
+		"secondary_blocker": secondary_blocker,
+		"upstream_summary": upstream_summary.strip_edges(),
+		"downstream_summary": downstream_summary.strip_edges()
+	}
+
+func get_building_diagnostic_details(building: BuildingState) -> Dictionary:
+	if building == null:
+		return {}
+
+	var max_slots: int = 3 if building.is_under_construction() else BuildingCatalog.get_worker_slots_for_footprint(building.definition_id, building.get_footprint())
+	var slot_reason: String = ""
+	if building.assigned_workers < max_slots:
+		slot_reason = "%d open slot(s) (Priority %s — waiting for unassigned citizen)" % [
+			max_slots - building.assigned_workers,
+			BuildingState.get_priority_name(building.work_priority)
+		]
+	else:
+		slot_reason = "All slots filled"
+
+	var formatted_logs: Array[String] = []
+	var raw_logs: Array = building.inventory.transaction_log
+	var start_idx: int = maxi(0, raw_logs.size() - 4)
+	for i in range(start_idx, raw_logs.size()):
+		var entry = raw_logs[i]
+		if entry is Dictionary:
+			var sign_str: String = "+" if entry.get("type", "") == "ADD" else "-"
+			formatted_logs.append("%s%d %s (%s)" % [
+				sign_str,
+				entry.get("amount", 0),
+				str(entry.get("resource_id", "")).capitalize(),
+				entry.get("reason", "")
+			])
+
+	return {
+		"assigned_citizens": get_assigned_citizens_for_building(building),
+		"open_slot_reason": slot_reason,
+		"production_chain": get_building_production_chain(building),
+		"recent_transactions": formatted_logs
+	}
+

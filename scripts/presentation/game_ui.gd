@@ -5,6 +5,11 @@ signal build_selected(building_id: StringName)
 signal speed_changed(speed_multiplier: float)
 signal toggle_overlay_requested()
 signal worker_assignment_changed(delta: int)
+signal building_priority_changed(delta: int)
+signal unassign_specific_worker_requested(citizen_id: int)
+signal toggle_workforce_panel_requested()
+signal auto_staffing_toggled(enabled: bool)
+signal citizen_selected_from_panel(citizen_id: int)
 signal recruit_unit_requested(unit_def_id: StringName)
 signal tax_level_cycled()
 signal save_game_requested()
@@ -46,11 +51,28 @@ var panel_inspector: PanelContainer = null
 var label_inspector_title: Label = null
 var label_inspector_status: Label = null
 var progress_inspector: ProgressBar = null
+var box_priority: HBoxContainer = null
+var label_priority: Label = null
 var box_workers: HBoxContainer = null
 var label_inspector_workers: Label = null
+var box_assigned_workers: VBoxContainer = null
 var progress_capacity: ProgressBar = null
 var label_inspector_inv: Label = null
+var label_production_chain: Label = null
+var label_transactions: Label = null
 var box_recruitment: VBoxContainer = null
+
+# Workforce Overview Panel
+var btn_workforce: Button = null
+var panel_workforce: PanelContainer = null
+var label_workforce_summary: Label = null
+var btn_auto_staffing: Button = null
+var box_workforce_citizens: VBoxContainer = null
+var active_workforce_filter: StringName = &"ALL"
+var filter_buttons: Dictionary = {}
+var _last_workforce_citizens: Array = []
+var _last_workforce_summary: Dictionary = {}
+var _last_auto_staffing: bool = false
 
 func _ready() -> void:
 	_build_ui_layout()
@@ -127,6 +149,7 @@ func _build_ui_layout() -> void:
 	speed_buttons = [btn_speed_pause, btn_speed_1x, btn_speed_2x, btn_speed_3x]
 	_highlight_speed_button(btn_speed_1x)
 	btn_overlay = _create_ctrl_button(ctrl_box, "LOGISTICS", func(): toggle_overlay_requested.emit())
+	btn_workforce = _create_ctrl_button(ctrl_box, "WORKFORCE", func(): toggle_workforce_panel_requested.emit())
 	_create_ctrl_button(ctrl_box, "SAVE", func(): save_game_requested.emit())
 	_create_ctrl_button(ctrl_box, "LOAD", func(): load_game_requested.emit())
 
@@ -209,17 +232,23 @@ func _build_ui_layout() -> void:
 
 	panel_inspector = PanelContainer.new()
 	panel_inspector.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	panel_inspector.offset_left = -310
+	panel_inspector.offset_left = -340
 	panel_inspector.offset_top = 106
 	panel_inspector.offset_right = -10
-	panel_inspector.offset_bottom = 490
+	panel_inspector.offset_bottom = -140
 	panel_inspector.add_theme_stylebox_override("panel", UITheme.create_panel_style(UITheme.COLOR_BG_PANEL, UITheme.COLOR_BORDER_GOLD, 2, 6))
 	panel_inspector.visible = false
 	panel_inspector.mouse_filter = Control.MOUSE_FILTER_STOP
 	add_child(panel_inspector)
+	var insp_scroll := ScrollContainer.new()
+	insp_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	insp_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	panel_inspector.add_child(insp_scroll)
 	var insp_box := VBoxContainer.new()
+	insp_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	insp_box.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	insp_box.add_theme_constant_override("separation", 7)
-	panel_inspector.add_child(insp_box)
+	insp_scroll.add_child(insp_box)
 	var header_box := HBoxContainer.new()
 	insp_box.add_child(header_box)
 	label_inspector_title = Label.new()
@@ -244,6 +273,26 @@ func _build_ui_layout() -> void:
 	progress_inspector.show_percentage = false
 	progress_inspector.visible = false
 	insp_box.add_child(progress_inspector)
+	box_priority = HBoxContainer.new()
+	box_priority.add_theme_constant_override("separation", 8)
+	insp_box.add_child(box_priority)
+	label_priority = Label.new()
+	label_priority.text = "Priority: 3 (Normal)"
+	label_priority.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	label_priority.add_theme_font_size_override("font_size", 12)
+	box_priority.add_child(label_priority)
+	var btn_pri_minus := Button.new()
+	btn_pri_minus.text = "[-]"
+	btn_pri_minus.custom_minimum_size = Vector2(30, 24)
+	UITheme.apply_button_style(btn_pri_minus)
+	btn_pri_minus.pressed.connect(func(): building_priority_changed.emit(-1))
+	box_priority.add_child(btn_pri_minus)
+	var btn_pri_plus := Button.new()
+	btn_pri_plus.text = "[+]"
+	btn_pri_plus.custom_minimum_size = Vector2(30, 24)
+	UITheme.apply_button_style(btn_pri_plus)
+	btn_pri_plus.pressed.connect(func(): building_priority_changed.emit(1))
+	box_priority.add_child(btn_pri_plus)
 	box_workers = HBoxContainer.new()
 	box_workers.add_theme_constant_override("separation", 8)
 	insp_box.add_child(box_workers)
@@ -263,12 +312,27 @@ func _build_ui_layout() -> void:
 	UITheme.apply_button_style(btn_w_plus)
 	btn_w_plus.pressed.connect(func(): worker_assignment_changed.emit(1))
 	box_workers.add_child(btn_w_plus)
+	box_assigned_workers = VBoxContainer.new()
+	box_assigned_workers.add_theme_constant_override("separation", 4)
+	insp_box.add_child(box_assigned_workers)
 	insp_box.add_child(HSeparator.new())
 	label_inspector_inv = Label.new()
 	label_inspector_inv.text = "STOCKPILE"
 	label_inspector_inv.add_theme_font_size_override("font_size", 12)
 	label_inspector_inv.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	insp_box.add_child(label_inspector_inv)
+	insp_box.add_child(HSeparator.new())
+	label_production_chain = Label.new()
+	label_production_chain.text = ""
+	label_production_chain.add_theme_font_size_override("font_size", 11)
+	label_production_chain.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	insp_box.add_child(label_production_chain)
+	label_transactions = Label.new()
+	label_transactions.text = ""
+	label_transactions.add_theme_font_size_override("font_size", 10)
+	label_transactions.add_theme_color_override("font_color", UITheme.COLOR_TEXT_MUTED)
+	label_transactions.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	insp_box.add_child(label_transactions)
 	box_recruitment = VBoxContainer.new()
 	box_recruitment.add_theme_constant_override("separation", 6)
 	box_recruitment.visible = false
@@ -287,6 +351,8 @@ func _build_ui_layout() -> void:
 	UITheme.apply_button_style(btn_archer)
 	btn_archer.pressed.connect(func(): recruit_unit_requested.emit(&"archer"))
 	box_recruitment.add_child(btn_archer)
+
+	_build_workforce_panel()
 
 func _create_badge(parent: Node, title: String, val: String, col: Color) -> Label:
 	var lbl := Label.new()
@@ -405,7 +471,7 @@ func update_economy(tax_name: String, approval_val: float) -> void:
 			rate_str = "4C"
 		btn_tax.text = "TAX: %s (%s)" % [tax_name, rate_str]
 
-func show_building_details(building: BuildingState, def_info: Dictionary, workers_present: int = -1) -> void:
+func show_building_details(building: BuildingState, def_info: Dictionary, workers_present: int = -1, details: Dictionary = {}) -> void:
 	if building == null:
 		panel_inspector.visible = false
 		return
@@ -413,6 +479,73 @@ func show_building_details(building: BuildingState, def_info: Dictionary, worker
 	panel_inspector.visible = true
 	if box_workers != null:
 		box_workers.visible = true
+	if box_priority != null:
+		box_priority.visible = true
+		label_priority.text = "Priority: %d (%s)" % [building.work_priority, BuildingState.get_priority_name(building.work_priority)]
+	if box_assigned_workers != null:
+		box_assigned_workers.visible = true
+		for child in box_assigned_workers.get_children():
+			child.queue_free()
+		var assigned_list: Array = details.get("assigned_citizens", [])
+		for w_info in assigned_list:
+			var row := HBoxContainer.new()
+			row.add_theme_constant_override("separation", 6)
+			var w_lbl := Label.new()
+			w_lbl.text = "#%d %s — %s (%s %d)" % [
+				w_info.get("id", 0),
+				str(w_info.get("role", "worker")).capitalize(),
+				w_info.get("state_str", "Idle"),
+				str(w_info.get("skill_name", "")).capitalize(),
+				w_info.get("skill_val", 50)
+			]
+			w_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			w_lbl.add_theme_font_size_override("font_size", 11)
+			row.add_child(w_lbl)
+			var btn_un := Button.new()
+			btn_un.text = "Unassign"
+			btn_un.custom_minimum_size = Vector2(64, 22)
+			btn_un.add_theme_font_size_override("font_size", 10)
+			UITheme.apply_button_style(btn_un)
+			var c_id: int = w_info.get("id", 0)
+			btn_un.pressed.connect(func(): unassign_specific_worker_requested.emit(c_id))
+			row.add_child(btn_un)
+			box_assigned_workers.add_child(row)
+		var slot_reason: String = details.get("open_slot_reason", "")
+		if slot_reason != "":
+			var reason_lbl := Label.new()
+			reason_lbl.text = slot_reason
+			reason_lbl.add_theme_font_size_override("font_size", 10)
+			reason_lbl.add_theme_color_override("font_color", UITheme.COLOR_TEXT_MUTED)
+			reason_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			box_assigned_workers.add_child(reason_lbl)
+	
+	if details.has("production_chain"):
+		var chain: Dictionary = details["production_chain"]
+		var c_text: String = "PRODUCTION & LOGISTICS:\n"
+		c_text += "  Operating State: %s\n" % chain.get("real_status", "IDLE")
+		if chain.get("primary_blocker", "") != "":
+			c_text += "  Primary Blocker: %s\n" % chain.get("primary_blocker", "")
+		if chain.get("secondary_blocker", "") != "":
+			c_text += "  Secondary Notice: %s\n" % chain.get("secondary_blocker", "")
+		if chain.get("upstream_summary", "") != "":
+			c_text += "\n  Upstream Inputs:\n%s" % chain.get("upstream_summary", "")
+		if chain.get("downstream_summary", "") != "":
+			c_text += "\n  Downstream Output:\n%s" % chain.get("downstream_summary", "")
+		label_production_chain.text = c_text
+		label_production_chain.visible = true
+	else:
+		label_production_chain.text = ""
+		label_production_chain.visible = false
+
+	if details.has("recent_transactions") and not (details["recent_transactions"] as Array).is_empty():
+		var t_text: String = "RECENT TRANSACTIONS:\n"
+		for line in details["recent_transactions"]:
+			t_text += "  " + str(line) + "\n"
+		label_transactions.text = t_text
+		label_transactions.visible = true
+	else:
+		label_transactions.text = ""
+		label_transactions.visible = false
 	
 	if building.is_under_construction():
 		label_inspector_title.text = "%s (Construction Site)  |  HP %d/%d" % [
@@ -554,6 +687,14 @@ func show_citizen_details(citizen: CitizenState, workplace: BuildingState = null
 	panel_inspector.visible = true
 	if box_workers != null:
 		box_workers.visible = false
+	if box_priority != null:
+		box_priority.visible = false
+	if box_assigned_workers != null:
+		box_assigned_workers.visible = false
+	if label_production_chain != null:
+		label_production_chain.visible = false
+	if label_transactions != null:
+		label_transactions.visible = false
 	if box_recruitment != null:
 		box_recruitment.visible = false
 
@@ -645,3 +786,196 @@ func show_citizen_details(citizen: CitizenState, workplace: BuildingState = null
 		text += " • %s: %d (x%.2f)\n" % [str(s).capitalize().rpad(10), s_val, s_fac]
 
 	label_inspector_inv.text = text
+
+func _build_workforce_panel() -> void:
+	panel_workforce = PanelContainer.new()
+	panel_workforce.set_anchors_preset(Control.PRESET_CENTER)
+	panel_workforce.offset_left = -330
+	panel_workforce.offset_top = -230
+	panel_workforce.offset_right = 330
+	panel_workforce.offset_bottom = 230
+	panel_workforce.add_theme_stylebox_override("panel", UITheme.create_panel_style(UITheme.COLOR_BG_PANEL, UITheme.COLOR_BORDER_GOLD, 2, 6))
+	panel_workforce.visible = false
+	panel_workforce.mouse_filter = Control.MOUSE_FILTER_STOP
+	add_child(panel_workforce)
+
+	var main_vbox := VBoxContainer.new()
+	main_vbox.add_theme_constant_override("separation", 8)
+	panel_workforce.add_child(main_vbox)
+
+	var header := HBoxContainer.new()
+	header.add_theme_constant_override("separation", 10)
+	main_vbox.add_child(header)
+
+	var lbl_title := Label.new()
+	lbl_title.text = "WORKFORCE OVERVIEW"
+	lbl_title.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+	lbl_title.add_theme_font_size_override("font_size", 14)
+	lbl_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(lbl_title)
+
+	btn_auto_staffing = Button.new()
+	btn_auto_staffing.text = "Auto-Staffing: OFF"
+	btn_auto_staffing.custom_minimum_size = Vector2(140, 26)
+	UITheme.apply_button_style(btn_auto_staffing)
+	btn_auto_staffing.pressed.connect(func():
+		_last_auto_staffing = not _last_auto_staffing
+		_update_auto_staffing_button()
+		auto_staffing_toggled.emit(_last_auto_staffing)
+	)
+	header.add_child(btn_auto_staffing)
+
+	var btn_close := Button.new()
+	btn_close.text = "X"
+	btn_close.custom_minimum_size = Vector2(28, 26)
+	UITheme.apply_button_style(btn_close)
+	btn_close.pressed.connect(func(): panel_workforce.visible = false)
+	header.add_child(btn_close)
+
+	main_vbox.add_child(HSeparator.new())
+
+	label_workforce_summary = Label.new()
+	label_workforce_summary.text = "Total: 0 | Employed: 0 | Unassigned: 0 | Working: 0 | Travelling: 0 | Hauling: 0 | Resting: 0 | Blocked: 0 | Builders: 0"
+	label_workforce_summary.add_theme_font_size_override("font_size", 11)
+	label_workforce_summary.add_theme_color_override("font_color", Color("#c8d6e5"))
+	label_workforce_summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	main_vbox.add_child(label_workforce_summary)
+
+	main_vbox.add_child(HSeparator.new())
+
+	var filter_bar := HBoxContainer.new()
+	filter_bar.add_theme_constant_override("separation", 4)
+	main_vbox.add_child(filter_bar)
+
+	var filters: Array[String] = ["ALL", "UNASSIGNED", "WORKING", "TRAVELLING", "HAULING", "RESTING", "BLOCKED", "BUILDERS"]
+	for f_name in filters:
+		var btn := Button.new()
+		btn.text = f_name
+		btn.custom_minimum_size = Vector2(0, 24)
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn.add_theme_font_size_override("font_size", 10)
+		UITheme.apply_button_style(btn, f_name == "ALL")
+		var s_name := StringName(f_name)
+		btn.pressed.connect(func(): _set_workforce_filter(s_name))
+		filter_bar.add_child(btn)
+		filter_buttons[s_name] = btn
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	main_vbox.add_child(scroll)
+
+	box_workforce_citizens = VBoxContainer.new()
+	box_workforce_citizens.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box_workforce_citizens.add_theme_constant_override("separation", 3)
+	scroll.add_child(box_workforce_citizens)
+
+func _update_auto_staffing_button() -> void:
+	if btn_auto_staffing != null:
+		btn_auto_staffing.text = "Auto-Staffing: ON" if _last_auto_staffing else "Auto-Staffing: OFF"
+		UITheme.apply_button_style(btn_auto_staffing, _last_auto_staffing)
+
+func _set_workforce_filter(filter_name: StringName) -> void:
+	active_workforce_filter = filter_name
+	for s_name in filter_buttons:
+		UITheme.apply_button_style(filter_buttons[s_name], s_name == filter_name)
+	_refresh_workforce_citizen_list()
+
+func toggle_workforce_panel() -> void:
+	if panel_workforce != null:
+		panel_workforce.visible = not panel_workforce.visible
+		if panel_workforce.visible:
+			_refresh_workforce_citizen_list()
+
+func is_workforce_panel_visible() -> bool:
+	return panel_workforce != null and panel_workforce.visible
+
+func update_workforce_panel(summary: Dictionary, citizens_data: Array, auto_staffing: bool) -> void:
+	_last_workforce_summary = summary
+	_last_workforce_citizens = citizens_data
+	_last_auto_staffing = auto_staffing
+	_update_auto_staffing_button()
+
+	if label_workforce_summary != null:
+		label_workforce_summary.text = "Total: %d  |  Employed: %d  |  Unassigned: %d  |  Working: %d  |  Travelling: %d  |  Hauling: %d  |  Resting: %d  |  Blocked: %d  |  Builders: %d" % [
+			summary.get("total", 0),
+			summary.get("employed", 0),
+			summary.get("unassigned", 0),
+			summary.get("working", 0),
+			summary.get("travelling", 0),
+			summary.get("hauling", 0),
+			summary.get("resting", 0),
+			summary.get("blocked", 0),
+			summary.get("builders", 0)
+		]
+	if panel_workforce != null and panel_workforce.visible:
+		_refresh_workforce_citizen_list()
+
+func _refresh_workforce_citizen_list() -> void:
+	if box_workforce_citizens == null:
+		return
+	for child in box_workforce_citizens.get_children():
+		child.queue_free()
+
+	for c in _last_workforce_citizens:
+		var role: StringName = c.get("role", &"unassigned")
+		var is_working: bool = c.get("is_working", false)
+		var is_travelling: bool = c.get("is_travelling", false)
+		var is_resting: bool = c.get("is_resting", false)
+		var is_blocked: bool = c.get("is_blocked", false)
+		var workplace_id: int = c.get("workplace_id", 0)
+
+		var matches: bool = false
+		match active_workforce_filter:
+			&"ALL": matches = true
+			&"UNASSIGNED": matches = (role == &"unassigned" and workplace_id == 0)
+			&"WORKING": matches = is_working
+			&"TRAVELLING": matches = is_travelling
+			&"HAULING": matches = (role == &"hauler")
+			&"RESTING": matches = is_resting
+			&"BLOCKED": matches = is_blocked
+			&"BUILDERS": matches = (role == &"builder")
+			_: matches = true
+
+		if not matches:
+			continue
+
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 6)
+		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+		var lbl := Label.new()
+		var state_str: String = c.get("state_str", "Idle")
+		var wp_str: String = c.get("workplace_str", "None")
+		var skill_name: String = str(c.get("primary_skill_name", "")).capitalize()
+		var skill_val: int = c.get("primary_skill_val", 50)
+		lbl.text = "#%d | %s | %s | %s | Energy: %d%% | %s: %d" % [
+			c.get("id", 0),
+			str(role).capitalize(),
+			state_str,
+			wp_str,
+			c.get("energy", 100),
+			skill_name,
+			skill_val
+		]
+		lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		lbl.add_theme_font_size_override("font_size", 11)
+		if is_blocked:
+			lbl.add_theme_color_override("font_color", UITheme.COLOR_RED_ALERT)
+		elif is_resting:
+			lbl.add_theme_color_override("font_color", Color.ORANGE)
+		elif is_working:
+			lbl.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
+		row.add_child(lbl)
+
+		var btn_focus := Button.new()
+		btn_focus.text = "Focus"
+		btn_focus.custom_minimum_size = Vector2(50, 22)
+		btn_focus.add_theme_font_size_override("font_size", 10)
+		UITheme.apply_button_style(btn_focus)
+		var cid: int = c.get("id", 0)
+		btn_focus.pressed.connect(func(): citizen_selected_from_panel.emit(cid))
+		row.add_child(btn_focus)
+
+		box_workforce_citizens.add_child(row)
+

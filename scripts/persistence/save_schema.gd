@@ -12,7 +12,8 @@ static func serialize(
 	military_units: Array[MilitaryUnitState],
 	job_board: JobBoard,
 	current_tick: int,
-	sim_speed: float
+	sim_speed: float,
+	auto_staffing_enabled: bool = false
 ) -> Dictionary:
 	var data: Dictionary = {
 		"meta": {
@@ -20,7 +21,8 @@ static func serialize(
 			"generator_version": GENERATOR_VERSION,
 			"seed_val": world_state.seed_val if world_state != null else 0,
 			"current_tick": current_tick,
-			"sim_speed": sim_speed
+			"sim_speed": sim_speed,
+			"auto_staffing_enabled": auto_staffing_enabled
 		},
 		"economy": {
 			"tax_level": economy.tax_level if economy != null else 1,
@@ -65,6 +67,7 @@ static func serialize(
 			"footprint": [b.footprint.x, b.footprint.y],
 			"tile_origin": [b.tile_origin.x, b.tile_origin.y],
 			"assigned_workers": b.assigned_workers,
+			"work_priority": b.work_priority,
 			"production_progress": b.production_progress,
 			"block_reason": str(b.current_block_reason),
 			"health": b.health,
@@ -224,6 +227,7 @@ static func deserialize(data: Dictionary) -> Dictionary:
 			b.footprint = Vector2i(int(saved_fp[0]), int(saved_fp[1]))
 			b.recalculate_entrance(b.footprint)
 		b.assigned_workers = b_dict.get("assigned_workers", 0)
+		b.work_priority = int(b_dict.get("work_priority", BuildingState.PRIORITY_DEFAULT))
 		b.production_progress = b_dict.get("production_progress", 0)
 		b.current_block_reason = StringName(b_dict.get("block_reason", ""))
 		b.health = int(b_dict.get("health", 100))
