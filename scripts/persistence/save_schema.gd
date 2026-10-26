@@ -107,7 +107,8 @@ static func serialize(
 			"food_state": c.food_state,
 			"carried_resource": str(c.carried_resource),
 			"carried_amount": c.carried_amount,
-			"active_job_id": c.active_job_id
+			"active_job_id": c.active_job_id,
+			"current_block_reason": str(c.current_block_reason)
 		}
 		data["citizens"].append(c_dict)
 		
@@ -274,6 +275,7 @@ static func deserialize(data: Dictionary) -> Dictionary:
 		c.carried_resource = StringName(c_dict.get("carried_resource", ""))
 		c.carried_amount = c_dict.get("carried_amount", 0)
 		c.active_job_id = c_dict.get("active_job_id", 0)
+		c.current_block_reason = StringName(c_dict.get("current_block_reason", ""))
 		citizens_arr.append(c)
 	result["citizens"] = citizens_arr
 	

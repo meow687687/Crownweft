@@ -143,9 +143,12 @@ func test_worker_doorway_routing() -> void:
 	assert_eq(ent_tile, Vector2i(11, 12), "Bakery entrance tile should be (11, 12)")
 	
 	var worker_start := Vector2i(2, 2)
-	var route: Array[Vector2i] = pathfinding.find_path_to_entrance(worker_start, b, 0, [])
-	assert_true(not route.is_empty(), "Worker must find path to entrance")
+	var route_res: Dictionary = pathfinding.find_path_to_entrance(worker_start, b, 0, [])
+	assert_true(route_res.get("ok", false), "Worker must find path to entrance")
+	var route: Array[Vector2i] = route_res.get("path", [])
+	assert_true(not route.is_empty(), "Route array must not be empty")
 	assert_eq(route[route.size() - 1], ent_tile, "Worker path must terminate directly at designated entrance tile (11, 12)")
+	assert_eq(route_res.get("target_tile"), ent_tile, "target_tile must be entrance tile")
 	assert_true(not route.has(Vector2i(10, 10)), "Path must not walk through solid building")
 	print("✓ Test 3: Worker doorway routing terminates at entrance PASSED")
 
@@ -218,32 +221,32 @@ func test_multi_worker_staging_and_deoverlap() -> void:
 	var occupied: Array[Vector2i] = []
 	
 	# Worker 1 routes to slot 0
-	var route_w1: Array[Vector2i] = pathfinding.find_path_to_entrance(Vector2i(0, 10), barracks, 0, occupied)
-	assert_true(not route_w1.is_empty(), "Route 1 must exist")
-	var dest_w1: Vector2i = route_w1[route_w1.size() - 1]
+	var res_w1: Dictionary = pathfinding.find_path_to_entrance(Vector2i(0, 10), barracks, 0, occupied)
+	assert_true(res_w1.get("ok", false), "Route 1 must exist")
+	var dest_w1: Vector2i = res_w1.get("target_tile")
 	assert_eq(dest_w1, Vector2i(11, 13), "Worker 1 should target primary doorway entrance")
 	occupied.append(dest_w1)
 	
 	# Worker 2 routes to slot 1 (dest_w1 occupied)
-	var route_w2: Array[Vector2i] = pathfinding.find_path_to_entrance(Vector2i(0, 10), barracks, 1, occupied)
-	assert_true(not route_w2.is_empty(), "Route 2 must exist")
-	var dest_w2: Vector2i = route_w2[route_w2.size() - 1]
+	var res_w2: Dictionary = pathfinding.find_path_to_entrance(Vector2i(0, 10), barracks, 1, occupied)
+	assert_true(res_w2.get("ok", false), "Route 2 must exist")
+	var dest_w2: Vector2i = res_w2.get("target_tile")
 	assert_true(dest_w2 != dest_w1, "Worker 2 must not target occupied worker 1 tile")
 	assert_eq(dest_w2, Vector2i(10, 13), "Worker 2 should target staging slot 1 (10, 13)")
 	occupied.append(dest_w2)
 	
 	# Worker 3 routes to slot 2 (slots 0 and 1 occupied)
-	var route_w3: Array[Vector2i] = pathfinding.find_path_to_entrance(Vector2i(0, 10), barracks, 2, occupied)
-	assert_true(not route_w3.is_empty(), "Route 3 must exist")
-	var dest_w3: Vector2i = route_w3[route_w3.size() - 1]
+	var res_w3: Dictionary = pathfinding.find_path_to_entrance(Vector2i(0, 10), barracks, 2, occupied)
+	assert_true(res_w3.get("ok", false), "Route 3 must exist")
+	var dest_w3: Vector2i = res_w3.get("target_tile")
 	assert_true(dest_w3 != dest_w1 and dest_w3 != dest_w2, "Worker 3 must target distinct tile")
 	assert_eq(dest_w3, Vector2i(12, 13), "Worker 3 should target staging slot 2 (12, 13)")
 	occupied.append(dest_w3)
 	
 	# Worker 4 routes to slot 3
-	var route_w4: Array[Vector2i] = pathfinding.find_path_to_entrance(Vector2i(0, 10), barracks, 3, occupied)
-	assert_true(not route_w4.is_empty(), "Route 4 must exist")
-	var dest_w4: Vector2i = route_w4[route_w4.size() - 1]
+	var res_w4: Dictionary = pathfinding.find_path_to_entrance(Vector2i(0, 10), barracks, 3, occupied)
+	assert_true(res_w4.get("ok", false), "Route 4 must exist")
+	var dest_w4: Vector2i = res_w4.get("target_tile")
 	assert_eq(dest_w4, Vector2i(11, 14), "Worker 4 should target queue staging slot 3 (11, 14)")
 	
 	# Verify that all 4 destinations count as valid interaction positions for production
@@ -253,30 +256,85 @@ func test_multi_worker_staging_and_deoverlap() -> void:
 	assert_true(barracks.is_at_entrance_or_staging(dest_w4), "Dest 4 is valid interaction tile")
 	print("✓ Test 5: Multi-worker staging, de-overlap and queuing PASSED")
 
-# Test 6: Route invalidation when entrance is blocked
+# Test 6: Route invalidation, failure result and alternative staging
 func test_route_invalidation_when_entrance_blocked() -> void:
 	var pathfinding := PathfindingService.new(30, 30)
 	
-	var quarry := BuildingState.new(8, &"quarry", 30, [&"stone"])
-	quarry.tile_origin = Vector2i(15, 15)
-	for dy in range(2):
-		for dx in range(2):
-			pathfinding.set_solid(Vector2i(15 + dx, 15 + dy), true)
+	# Case A: An explicitly configured alternative entrance or staging position remains usable
+	var barracks := BuildingState.new(8, &"barracks", 40, [&"bread"])
+	barracks.tile_origin = Vector2i(10, 10)
+	for dy in range(3):
+		for dx in range(3):
+			pathfinding.set_solid(Vector2i(10 + dx, 10 + dy), true)
 			
-	var ent: Vector2i = quarry.get_entrance_tile() # (16, 17)
-	assert_true(pathfinding.is_entrance_walkable(quarry), "Entrance must initially be walkable")
+	var primary_ent: Vector2i = barracks.get_entrance_tile() # (11, 13)
+	pathfinding.set_solid(primary_ent, true) # Block only primary doorway
 	
-	# Block the entrance
-	pathfinding.set_solid(ent, true)
-	assert_true(not pathfinding.is_entrance_walkable(quarry), "Entrance must now be reported as not walkable")
+	var alt_res: Dictionary = pathfinding.find_path_to_entrance(Vector2i(5, 5), barracks, 0, [])
+	assert_true(alt_res.get("ok", false), "Alternative staging tile must be used when primary entrance blocked")
+	var alt_target: Vector2i = alt_res.get("target_tile")
+	assert_true(alt_target != primary_ent, "Target must not be the blocked primary entrance")
+	assert_eq(alt_target, Vector2i(10, 13), "Should cleanly pick next configured staging tile (10, 13)")
+	assert_true(barracks.is_at_entrance_or_staging(alt_target), "Alternative tile is a valid staging position")
 	
-	# Finding path with slot 0 should cleanly use alternative staging or perimeter fallback without crash
-	var route: Array[Vector2i] = pathfinding.find_path_to_entrance(Vector2i(5, 5), quarry, 0, [])
-	assert_true(not route.is_empty(), "Should find route to alternative staging/perimeter")
-	var target_tile: Vector2i = route[route.size() - 1]
-	assert_true(target_tile != ent, "Target tile must not be the blocked entrance")
-	assert_true(not pathfinding.astar_grid.is_point_solid(target_tile), "Target tile must be traversable")
-	print("✓ Test 6: Route invalidation and fallback when entrance blocked PASSED")
+	# Case B: A blocked entrance with NO valid alternative produces a clear failure ENTRANCE_UNREACHABLE
+	# Block all other staging positions for barracks: (10, 13), (12, 13), (11, 14)
+	pathfinding.set_solid(Vector2i(10, 13), true)
+	pathfinding.set_solid(Vector2i(12, 13), true)
+	pathfinding.set_solid(Vector2i(11, 14), true)
+	
+	var fail_res: Dictionary = pathfinding.find_path_to_entrance(Vector2i(5, 5), barracks, 0, [])
+	assert_true(not fail_res.get("ok", true), "Must fail when all entrances and staging positions are blocked")
+	assert_eq(fail_res.get("reason", &""), &"ENTRANCE_UNREACHABLE", "Must return ENTRANCE_UNREACHABLE failure reason")
+	assert_true((fail_res.get("path", []) as Array[Vector2i]).is_empty(), "Path must be empty — NO silent fallback to perimeter!")
+	
+	# Case C: Worker state and workplace expose the blocked condition in simulation
+	var world_scene: WorldScene = load("res://scenes/world/world.tscn").instantiate()
+	world_scene._ready()
+	world_scene.citizens.clear()
+	world_scene.buildings.clear()
+	
+	for y in range(4, 16):
+		for x in range(4, 16):
+			var c := Vector2i(x, y)
+			var t: WorldTile = world_scene.world_state.get_tile(c)
+			t.terrain_id = &"grass"
+			t.is_walkable = true
+			t.is_buildable = true
+			t.building_id = 0
+			world_scene.pathfinding.set_solid(c, false)
+	
+	# Place quarry at (10, 10)
+	var quarry: BuildingState = world_scene.place_building(&"quarry", Vector2i(10, 10), true)
+	var q_ent: Vector2i = quarry.get_entrance_tile() # (11, 12)
+	
+	# Add a worker assigned to quarry
+	var worker := CitizenState.new(99, Vector2i(5, 5), &"miner")
+	worker.workplace_id = quarry.entity_id
+	world_scene.citizens.append(worker)
+	
+	# Block all quarry staging tiles: (11, 12), (10, 12), (11, 13)
+	for s in quarry.get_interaction_tiles():
+		world_scene.pathfinding.set_solid(s, true)
+		
+	# Advance worker movement
+	world_scene._update_worker_movement()
+	
+	# Verify citizen and building both expose ENTRANCE_UNREACHABLE
+	assert_eq(worker.current_block_reason, &"ENTRANCE_UNREACHABLE", "Worker state must expose ENTRANCE_UNREACHABLE")
+	assert_eq(quarry.current_block_reason, &"ENTRANCE_UNREACHABLE", "Building state must expose ENTRANCE_UNREACHABLE")
+	
+	# Verify that unblocking restores movement and clears reason
+	for s in quarry.get_interaction_tiles():
+		world_scene.pathfinding.set_solid(s, false)
+		
+	world_scene._update_worker_movement()
+	assert_eq(worker.current_block_reason, &"", "Worker block reason must clear when entrance is unblocked")
+	assert_eq(quarry.current_block_reason, &"", "Building block reason must clear when entrance is unblocked")
+	assert_true(worker.move_state == CitizenState.MoveState.MOVING or worker.path.size() > 0, "Worker should now be moving toward entrance")
+	
+	world_scene.free()
+	print("✓ Test 6: Route invalidation, explicit failure result, and alternative staging PASSED")
 
 # Test 7: Staged construction lifecycle compatibility with explicit entrances
 func test_staged_construction_entrance_compatibility() -> void:

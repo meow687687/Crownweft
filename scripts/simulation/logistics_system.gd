@@ -226,10 +226,10 @@ func _find_alternate_destination(
 			continue
 		var definition: Dictionary = BuildingCatalog.get_all_defs().get(candidate.definition_id, {})
 		var footprint: Vector2i = definition.get("footprint", Vector2i.ONE)
-		var candidate_path: Array[Vector2i] = pathfinding.find_path_to_entrance(
+		var route_res: Dictionary = pathfinding.find_path_to_entrance(
 			hauler.current_tile, candidate
 		)
-		if not candidate_path.is_empty():
+		if route_res.get("ok", false) and not (route_res.get("path", []) as Array[Vector2i]).is_empty():
 			candidates.append(candidate)
 	candidates.sort_custom(func(a: BuildingState, b: BuildingState) -> bool:
 		var dist_a: int = absi(a.tile_origin.x - hauler.current_tile.x) + absi(a.tile_origin.y - hauler.current_tile.y)
@@ -254,15 +254,19 @@ func _advance_toward(
 		needs_new_path = true
 
 	if needs_new_path:
-		var new_path: Array[Vector2i] = pathfinding.find_path_to_entrance(
+		var route_res: Dictionary = pathfinding.find_path_to_entrance(
 			hauler.current_tile, target_building
 		)
+		var new_path: Array[Vector2i] = []
+		if route_res.get("ok", false):
+			new_path.assign(route_res.get("path", []))
 		hauler.clear_path()
-		if new_path.is_empty():
+		if not route_res.get("ok", false) or new_path.is_empty():
 			# clear_path resets the target; restore it so the retry cooldown is respected.
 			hauler.path_target_inventory_id = target_inventory_id
-			hauler.last_block_reason = "NO_PATH"
-			hauler.active_job.blocked_reason = "NO_PATH — waiting for a reachable route"
+			var block_reason_str: String = str(route_res.get("reason", "ENTRANCE_UNREACHABLE"))
+			hauler.last_block_reason = block_reason_str
+			hauler.active_job.blocked_reason = "%s — waiting for a reachable entrance route" % block_reason_str
 			hauler.next_path_retry_tick = current_tick + PATH_RETRY_TICKS
 			return false
 		hauler.path = new_path

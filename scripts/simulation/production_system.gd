@@ -17,7 +17,8 @@ func tick_building(
 		return
 	var effective_workers: int = building.assigned_workers if workers_present < 0 else workers_present
 	if effective_workers < recipe.required_workers:
-		building.current_block_reason = &"NO_WORKERS"
+		if building.current_block_reason != &"ENTRANCE_UNREACHABLE":
+			building.current_block_reason = &"NO_WORKERS"
 		return
 
 	var starting_cycle: bool = building.production_progress == 0

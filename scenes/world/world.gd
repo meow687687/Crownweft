@@ -777,6 +777,11 @@ func _update_worker_movement() -> void:
 		building_worker_slots[workplace.entity_id] = slot_idx + 1
 
 		if citizen.move_state == CitizenState.MoveState.IDLE and _is_adjacent_to_building(citizen.position_tile, workplace, footprint):
+			citizen.current_block_reason = &""
+			if workplace.current_block_reason == &"ENTRANCE_UNREACHABLE":
+				workplace.current_block_reason = &""
+			if workplace.construction_block_reason == &"ENTRANCE_UNREACHABLE":
+				workplace.construction_block_reason = &""
 			continue
 
 		if not citizen.path.is_empty():
@@ -784,16 +789,33 @@ func _update_worker_movement() -> void:
 				citizen.path.clear()
 
 		if citizen.path.is_empty():
-			var occupied: Array[Vector2i] = occupied_by_building.get(workplace.entity_id, [])
-			var route: Array[Vector2i] = pathfinding.find_path_to_entrance(
+			var occupied: Array[Vector2i] = []
+			if occupied_by_building.has(workplace.entity_id):
+				occupied.assign(occupied_by_building[workplace.entity_id])
+			var route_res: Dictionary = pathfinding.find_path_to_entrance(
 				citizen.position_tile, workplace, slot_idx, occupied
 			)
-			if route.is_empty():
+			if not route_res.get("ok", false):
 				citizen.move_state = CitizenState.MoveState.IDLE
 				citizen.target_tile = citizen.position_tile
+				var reason: StringName = route_res.get("reason", &"ENTRANCE_UNREACHABLE")
+				citizen.current_block_reason = reason
+				if workplace.is_under_construction():
+					workplace.construction_block_reason = reason
+				else:
+					workplace.current_block_reason = reason
 				continue
+
+			citizen.current_block_reason = &""
+			if workplace.current_block_reason == &"ENTRANCE_UNREACHABLE":
+				workplace.current_block_reason = &""
+			if workplace.construction_block_reason == &"ENTRANCE_UNREACHABLE":
+				workplace.construction_block_reason = &""
+
+			var route: Array[Vector2i] = []
+			route.assign(route_res.get("path", []))
 			citizen.path = route
-			citizen.target_tile = route[route.size() - 1]
+			citizen.target_tile = route_res.get("target_tile", route[route.size() - 1] if not route.is_empty() else citizen.position_tile)
 			if not citizen.path.is_empty():
 				citizen.path.remove_at(0) # The first route tile is the citizen's current tile.
 			if citizen.path.is_empty():

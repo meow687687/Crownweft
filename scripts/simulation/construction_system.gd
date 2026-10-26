@@ -51,8 +51,9 @@ func tick_building(building: BuildingState, workers_present: int, current_tick: 
 	building.status = BuildingState.Status.UNDER_CONSTRUCTION
 	
 	if workers_present <= 0:
-		building.construction_block_reason = &"NO_BUILDERS"
-		construction_blocked.emit(building, &"NO_BUILDERS")
+		if building.construction_block_reason != &"ENTRANCE_UNREACHABLE":
+			building.construction_block_reason = &"NO_BUILDERS"
+		construction_blocked.emit(building, building.construction_block_reason)
 		return
 		
 	building.construction_block_reason = &""

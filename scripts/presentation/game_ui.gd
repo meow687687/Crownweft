@@ -408,7 +408,10 @@ func show_building_details(building: BuildingState, def_info: Dictionary, worker
 		]
 		
 		# Construction status and missing materials explanation
-		if building.status == BuildingState.Status.PLANNED:
+		if building.construction_block_reason == &"ENTRANCE_UNREACHABLE":
+			label_inspector_status.text = "STATUS: BLOCKED — ENTRANCE UNREACHABLE"
+			label_inspector_status.add_theme_color_override("font_color", UITheme.COLOR_RED_ALERT)
+		elif building.status == BuildingState.Status.PLANNED:
 			var missing_dict: Dictionary = building.get_outstanding_materials()
 			var missing_str: String = ""
 			for k in missing_dict:
@@ -444,7 +447,8 @@ func show_building_details(building: BuildingState, def_info: Dictionary, worker
 			
 		# Material requirements and deliveries
 		var ent: Vector2i = building.get_entrance_tile()
-		var inv_text: String = "Entrance: (%d, %d)\nConstruction Materials:\n" % [ent.x, ent.y]
+		var ent_tag: String = " [BLOCKED]" if building.construction_block_reason == &"ENTRANCE_UNREACHABLE" else ""
+		var inv_text: String = "Entrance: (%d, %d)%s\nConstruction Materials:\n" % [ent.x, ent.y, ent_tag]
 		for res_id in building.construction_cost:
 			var req: int = building.construction_cost[res_id]
 			var deliv: int = building.get_delivered_materials().get(res_id, 0)
@@ -464,6 +468,9 @@ func show_building_details(building: BuildingState, def_info: Dictionary, worker
 	if building.current_block_reason == &"":
 		label_inspector_status.text = "STATUS: ACTIVE"
 		label_inspector_status.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
+	elif building.current_block_reason == &"ENTRANCE_UNREACHABLE":
+		label_inspector_status.text = "STATUS: BLOCKED — ENTRANCE UNREACHABLE"
+		label_inspector_status.add_theme_color_override("font_color", UITheme.COLOR_RED_ALERT)
 	elif building.current_block_reason == &"MISSING_INPUTS":
 		label_inspector_status.text = "STATUS: BLOCKED — MISSING INPUTS"
 		label_inspector_status.add_theme_color_override("font_color", UITheme.COLOR_RED_ALERT)
@@ -507,7 +514,8 @@ func show_building_details(building: BuildingState, def_info: Dictionary, worker
 	var total_stored: int = building.inventory.get_total_quantity()
 	var cap: int = building.inventory.capacity
 	var act_ent: Vector2i = building.get_entrance_tile()
-	var inv_text: String = "Entrance: (%d, %d)\nPhysical Storage (%d / %d):\n" % [act_ent.x, act_ent.y, total_stored, cap]
+	var act_tag: String = " [BLOCKED]" if building.current_block_reason == &"ENTRANCE_UNREACHABLE" else ""
+	var inv_text: String = "Entrance: (%d, %d)%s\nPhysical Storage (%d / %d):\n" % [act_ent.x, act_ent.y, act_tag, total_stored, cap]
 	if building.inventory.quantities.is_empty():
 		inv_text += "  (Empty)\n"
 	else:

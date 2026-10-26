@@ -25,6 +25,7 @@ var path: Array[Vector2i] = []
 @export var carried_resource: StringName = &""
 @export var carried_amount: int = 0
 @export var active_job_id: int = 0
+@export var current_block_reason: StringName = &""
 
 func _init(p_id: int = 0, p_pos: Vector2i = Vector2i.ZERO, p_role: StringName = &"unassigned") -> void:
 	id = p_id
