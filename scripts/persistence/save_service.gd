@@ -16,7 +16,9 @@ static func save_game_to_file(
 	auto_staffing_enabled: bool = false,
 	government: GovernmentState = null,
 	diplomacy: DiplomacyState = null,
-	regional_world: RegionalWorldState = null
+	regional_world: RegionalWorldState = null,
+	guidance = null,
+	event_log = null
 ) -> bool:
 	var data: Dictionary = SaveSchema.serialize(
 		world_state,
@@ -30,7 +32,9 @@ static func save_game_to_file(
 		auto_staffing_enabled,
 		government,
 		diplomacy,
-		regional_world
+		regional_world,
+		guidance,
+		event_log
 	)
 	var json_str: String = JSON.stringify(data, "  ")
 	

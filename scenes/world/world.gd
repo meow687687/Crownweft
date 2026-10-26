@@ -2,6 +2,8 @@ class_name WorldScene
 extends Node2D
 
 const RoadAutotiler = preload("res://scripts/presentation/road_autotiler.gd")
+const GuidanceService = preload("res://scripts/simulation/guidance_service.gd")
+const EventLogService = preload("res://scripts/simulation/event_log_service.gd")
 
 @onready var camera: RTSCamera = $RTSCamera
 @onready var renderer: WorldRenderer = $WorldRenderer
@@ -21,6 +23,9 @@ var government: GovernmentState = GovernmentState.new()
 var diplomacy: DiplomacyState = DiplomacyState.new()
 var diplomacy_system: DiplomacySystem = DiplomacySystem.new()
 var regional_world: RegionalWorldState = null
+var guidance: GuidanceService = GuidanceService.new()
+var event_log: EventLogService = EventLogService.new()
+var _last_chronicle_count: int = 0
 
 var buildings: Array[BuildingState] = []
 var citizens: Array[CitizenState] = []
@@ -98,21 +103,51 @@ func _init_simulation() -> void:
 	var th_pos: Vector2i = world_state.start_settlement_pos
 	var th_building: BuildingState = place_building(&"town_hall", th_pos, true)
 	if th_building != null:
-		# Starting supplies
-		th_building.inventory.add_resource(&"coin", 50, "START_FUNDS")
-		th_building.inventory.add_resource(&"bread", 20, "START_FOOD")
-		th_building.inventory.add_resource(&"timber", 25, "START_TIMBER")
-		th_building.inventory.add_resource(&"stone", 10, "START_STONE")
+		# Starting supplies: 60 coin, 25 bread, 30 timber, 15 stone
+		th_building.inventory.add_resource(&"coin", 60, "START_FUNDS")
+		th_building.inventory.add_resource(&"bread", 25, "START_FOOD")
+		th_building.inventory.add_resource(&"timber", 30, "START_TIMBER")
+		th_building.inventory.add_resource(&"stone", 15, "START_STONE")
+
+	# Starting Farm: complete, active, unstaffed, ready for assignment
+	var farm_pos: Vector2i = th_pos + Vector2i(-4, -4)
+	var starting_farm: BuildingState = place_building(&"farm", farm_pos, true)
+	if starting_farm != null:
+		starting_farm.status = BuildingState.Status.ACTIVE
+		starting_farm.assigned_workers = 0
+
+	# Initial chronicle entry
+	if event_log != null:
+		event_log.add_event(&"system", "Settlement established at Crownweft Valley.", &"info", 0)
 		
+	# Initial workforce archetypes: 10 citizens across species, social classes, cultures, convictions
+	var initial_archetypes: Array[Dictionary] = [
+		{"species": &"human", "status": &"commoner", "culture": &"valen", "religion": &"pantheon"},
+		{"species": &"human", "status": &"commoner", "culture": &"valen", "religion": &"pantheon"},
+		{"species": &"greenwarden", "status": &"artisan", "culture": &"sylvanari", "religion": &"old_grove"},
+		{"species": &"stoneborn", "status": &"artisan", "culture": &"khorvath", "religion": &"secular"},
+		{"species": &"human", "status": &"administrator", "culture": &"valen", "religion": &"pantheon"},
+		{"species": &"frostkin", "status": &"scholar", "culture": &"khorvath", "religion": &"secular"},
+		{"species": &"human", "status": &"merchant", "culture": &"valen", "religion": &"pantheon"},
+		{"species": &"greenwarden", "status": &"commoner", "culture": &"sylvanari", "religion": &"old_grove"},
+		{"species": &"stoneborn", "status": &"commoner", "culture": &"khorvath", "religion": &"secular"},
+		{"species": &"human", "status": &"commoner", "culture": &"sylvanari", "religion": &"pantheon"},
+	]
+
 	# Spawn initial workforce: 10 citizens
 	for i in range(10):
 		var c_pos: Vector2i = th_pos + Vector2i(i % 3 - 1, i / 3 + 4)
-		var citizen: CitizenState = spawn_citizen(c_pos)
+		var arch: Dictionary = initial_archetypes[i]
+		var citizen: CitizenState = spawn_citizen(c_pos, &"unassigned", arch["species"], arch["status"], arch["culture"], arch["religion"])
 		
 		# Assign first 2 citizens as dedicated haulers
 		if i < 2:
 			citizen.role_id = &"hauler"
 			logistics.register_hauler(citizen.id, citizen.position_tile)
+
+	# Initial guidance update
+	if guidance != null:
+		guidance.update_guidance(self, event_log)
 			
 	# Center camera on start settlement
 	if camera != null:
@@ -170,6 +205,16 @@ func _setup_signals() -> void:
 	ui.army_halt_requested.connect(_on_army_halt_requested)
 	ui.army_resupply_requested.connect(_on_army_resupply_requested)
 	combat.unit_died.connect(_on_unit_died)
+	ui.guidance_minimized_toggled.connect(func(minimized: bool):
+		guidance.is_minimized = minimized
+	)
+	ui.toggle_event_log_requested.connect(func():
+		ui.toggle_event_log_panel()
+	)
+	guidance.objective_completed.connect(func(obj_id: StringName, title: String):
+		if ui != null:
+			ui.show_toast("Objective Complete: " + title, false)
+	)
 	ui.save_game_requested.connect(_on_save_game)
 	ui.load_game_requested.connect(_on_load_game)
 
@@ -776,6 +821,9 @@ func _on_building_completed(building: BuildingState) -> void:
 		renderer.queue_redraw()
 	if ui != null:
 		ui.show_toast("%s completed and active!" % def_info.get("display_name", str(building.definition_id)), false)
+	if event_log != null:
+		var b_name: String = def_info.get("display_name", str(building.definition_id).capitalize())
+		event_log.add_event(&"building", "%s construction completed." % b_name, &"info", current_tick)
 
 func cancel_construction_site(building: BuildingState) -> void:
 	if building == null or not building.is_under_construction():
@@ -1018,6 +1066,30 @@ func _simulation_tick() -> void:
 		_update_diplomacy_ui()
 	if ui != null and ui.is_world_map_visible():
 		_update_world_map_ui()
+
+	# Mirror new diplomacy chronicle entries to event log
+	if event_log != null and diplomacy != null:
+		while _last_chronicle_count < diplomacy.diplomatic_chronicle.size():
+			var entry: Dictionary = diplomacy.diplomatic_chronicle[_last_chronicle_count]
+			_last_chronicle_count += 1
+			var entry_type: StringName = entry.get("type", &"general")
+			var cat: StringName = &"diplomacy"
+			var sev: StringName = &"info"
+			if entry_type in [&"trade_completed", &"trade"]:
+				cat = &"trade"
+				sev = &"success"
+			elif entry_type in [&"war", &"raid"]:
+				cat = &"combat"
+				sev = &"danger"
+			event_log.add_event(cat, entry.get("text", ""), sev, entry.get("tick", current_tick))
+
+	# Update guidance and event log UI
+	var g_info: Dictionary = guidance.update_guidance(self, event_log)
+	if ui != null:
+		ui.update_guidance_panel(g_info)
+		if ui.is_event_log_visible():
+			ui.update_event_log(event_log.events)
+
 	if renderer != null:
 		renderer.queue_redraw()
 
@@ -1660,7 +1732,9 @@ func save_game(file_path: String = SaveService.DEFAULT_SAVE_PATH) -> bool:
 		auto_staffing_enabled,
 		government,
 		diplomacy,
-		regional_world
+		regional_world,
+		guidance,
+		event_log
 	)
 	if ui != null:
 		if success:
@@ -1754,8 +1828,15 @@ func apply_loaded_state(loaded: Dictionary) -> void:
 		renderer.queue_redraw()
 	selected_building = null
 	selected_units.clear()
+	if loaded.has("guidance") and loaded["guidance"] is Dictionary:
+		guidance.deserialize(loaded["guidance"])
+	if loaded.has("event_log") and loaded["event_log"] is Array:
+		event_log.deserialize(loaded["event_log"])
+	var g_info: Dictionary = guidance.update_guidance(self, event_log)
 	_update_ui_state({"fed": 0, "hungry": 0, "at_risk": 0})
 	if ui != null:
+		ui.update_guidance_panel(g_info)
+		ui.update_event_log(event_log.events)
 		ui.update_economy(economy.get_tax_level_name(), economy.approval)
 		_update_workforce_panel()
 		ui.show_toast("Realm loaded successfully", false)

@@ -25,6 +25,8 @@ signal region_selected(region_id: StringName)
 signal army_march_requested(army_id: int, dest_region_id: StringName)
 signal army_halt_requested(army_id: int)
 signal army_resupply_requested(army_id: int)
+signal guidance_minimized_toggled(minimized: bool)
+signal toggle_event_log_requested()
 
 # Top Bar Elements
 var label_coin: Label = null
@@ -115,6 +117,26 @@ var map_node_container: Control = null
 var box_region_details: VBoxContainer = null
 var selected_region_id: StringName = RegionCatalog.REGION_CROWNWEFT
 var _last_world_map_data: Dictionary = {}
+
+# Guidance & Objectives Panel
+var panel_guidance: PanelContainer = null
+var label_guidance_stage: Label = null
+var label_guidance_title: Label = null
+var label_guidance_desc: Label = null
+var label_guidance_action: Label = null
+var label_guidance_progress: Label = null
+var panel_guidance_blocker: PanelContainer = null
+var label_guidance_blocker: Label = null
+var btn_guidance_toggle: Button = null
+var box_guidance_body: VBoxContainer = null
+var is_guidance_minimized: bool = false
+
+# Event Chronicle Panel
+var panel_event_log: PanelContainer = null
+var box_event_log_items: VBoxContainer = null
+var btn_event_log_toggle: Button = null
+var box_event_log_body: VBoxContainer = null
+var is_event_log_minimized: bool = false
 
 func _ready() -> void:
 	_build_ui_layout()
@@ -401,6 +423,198 @@ func _build_ui_layout() -> void:
 	_build_government_panel()
 	_build_diplomacy_panel()
 	_build_world_map_panel()
+	_build_guidance_panel()
+	_build_event_log_panel()
+
+func _build_guidance_panel() -> void:
+	panel_guidance = PanelContainer.new()
+	panel_guidance.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	panel_guidance.offset_left = 10
+	panel_guidance.offset_top = 106
+	panel_guidance.offset_right = 340
+	panel_guidance.add_theme_stylebox_override("panel", UITheme.create_panel_style(UITheme.COLOR_BG_DARK, UITheme.COLOR_BORDER_GOLD, 2, 6))
+	panel_guidance.mouse_filter = Control.MOUSE_FILTER_STOP
+	add_child(panel_guidance)
+
+	var main_vbox := VBoxContainer.new()
+	main_vbox.add_theme_constant_override("separation", 5)
+	panel_guidance.add_child(main_vbox)
+
+	var header_row := HBoxContainer.new()
+	main_vbox.add_child(header_row)
+
+	label_guidance_stage = Label.new()
+	label_guidance_stage.text = "STAGE A: STABILIZE SETTLEMENT"
+	label_guidance_stage.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	label_guidance_stage.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+	label_guidance_stage.add_theme_font_size_override("font_size", 11)
+	header_row.add_child(label_guidance_stage)
+
+	btn_guidance_toggle = Button.new()
+	btn_guidance_toggle.text = "[-]"
+	btn_guidance_toggle.custom_minimum_size = Vector2(28, 22)
+	UITheme.apply_button_style(btn_guidance_toggle)
+	btn_guidance_toggle.pressed.connect(func():
+		is_guidance_minimized = not is_guidance_minimized
+		box_guidance_body.visible = not is_guidance_minimized
+		btn_guidance_toggle.text = "[+]" if is_guidance_minimized else "[-]"
+		guidance_minimized_toggled.emit(is_guidance_minimized)
+	)
+	header_row.add_child(btn_guidance_toggle)
+
+	box_guidance_body = VBoxContainer.new()
+	box_guidance_body.add_theme_constant_override("separation", 5)
+	main_vbox.add_child(box_guidance_body)
+
+	label_guidance_title = Label.new()
+	label_guidance_title.text = "Assign a Farmer to the Fields"
+	label_guidance_title.add_theme_color_override("font_color", Color("#ffffff"))
+	label_guidance_title.add_theme_font_size_override("font_size", 13)
+	label_guidance_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box_guidance_body.add_child(label_guidance_title)
+
+	label_guidance_desc = Label.new()
+	label_guidance_desc.text = "Our citizens require food to avoid hunger. The settlement has a farm ready for planting, but no hands in the field."
+	label_guidance_desc.add_theme_color_override("font_color", UITheme.COLOR_TEXT_MUTED)
+	label_guidance_desc.add_theme_font_size_override("font_size", 11)
+	label_guidance_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box_guidance_body.add_child(label_guidance_desc)
+
+	var act_panel := PanelContainer.new()
+	act_panel.add_theme_stylebox_override("panel", UITheme.create_panel_style(Color(0.12, 0.16, 0.22, 0.95), UITheme.COLOR_BORDER, 1, 4))
+	box_guidance_body.add_child(act_panel)
+
+	var act_vbox := VBoxContainer.new()
+	act_vbox.add_theme_constant_override("separation", 3)
+	act_panel.add_child(act_vbox)
+
+	label_guidance_action = Label.new()
+	label_guidance_action.text = "ACTION: Select Farm or press 'W' to assign a farmer."
+	label_guidance_action.add_theme_color_override("font_color", Color("#9ed7e7"))
+	label_guidance_action.add_theme_font_size_override("font_size", 11)
+	label_guidance_action.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	act_vbox.add_child(label_guidance_action)
+
+	label_guidance_progress = Label.new()
+	label_guidance_progress.text = "Workers: 0 / 1"
+	label_guidance_progress.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+	label_guidance_progress.add_theme_font_size_override("font_size", 11)
+	act_vbox.add_child(label_guidance_progress)
+
+	panel_guidance_blocker = PanelContainer.new()
+	panel_guidance_blocker.add_theme_stylebox_override("panel", UITheme.create_panel_style(Color(0.28, 0.08, 0.08, 0.95), UITheme.COLOR_RED_ALERT, 1, 4))
+	panel_guidance_blocker.visible = false
+	box_guidance_body.add_child(panel_guidance_blocker)
+
+	label_guidance_blocker = Label.new()
+	label_guidance_blocker.text = "BLOCKER: No unassigned citizens."
+	label_guidance_blocker.add_theme_color_override("font_color", Color("#ffc8be"))
+	label_guidance_blocker.add_theme_font_size_override("font_size", 11)
+	label_guidance_blocker.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	panel_guidance_blocker.add_child(label_guidance_blocker)
+
+func _build_event_log_panel() -> void:
+	panel_event_log = PanelContainer.new()
+	panel_event_log.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	panel_event_log.offset_left = 10
+	panel_event_log.offset_top = 350
+	panel_event_log.offset_right = 340
+	panel_event_log.offset_bottom = 570
+	panel_event_log.add_theme_stylebox_override("panel", UITheme.create_panel_style(UITheme.COLOR_BG_DARK, UITheme.COLOR_BORDER, 1, 6))
+	panel_event_log.mouse_filter = Control.MOUSE_FILTER_STOP
+	add_child(panel_event_log)
+
+	var main_vbox := VBoxContainer.new()
+	main_vbox.add_theme_constant_override("separation", 4)
+	panel_event_log.add_child(main_vbox)
+
+	var header_row := HBoxContainer.new()
+	main_vbox.add_child(header_row)
+
+	var lbl_title := Label.new()
+	lbl_title.text = "SETTLEMENT CHRONICLE"
+	lbl_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	lbl_title.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+	lbl_title.add_theme_font_size_override("font_size", 11)
+	header_row.add_child(lbl_title)
+
+	btn_event_log_toggle = Button.new()
+	btn_event_log_toggle.text = "[-]"
+	btn_event_log_toggle.custom_minimum_size = Vector2(28, 22)
+	UITheme.apply_button_style(btn_event_log_toggle)
+	btn_event_log_toggle.pressed.connect(func():
+		is_event_log_minimized = not is_event_log_minimized
+		box_event_log_body.visible = not is_event_log_minimized
+		btn_event_log_toggle.text = "[+]" if is_event_log_minimized else "[-]"
+	)
+	header_row.add_child(btn_event_log_toggle)
+
+	box_event_log_body = VBoxContainer.new()
+	box_event_log_body.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	main_vbox.add_child(box_event_log_body)
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.custom_minimum_size = Vector2(0, 160)
+	box_event_log_body.add_child(scroll)
+
+	box_event_log_items = VBoxContainer.new()
+	box_event_log_items.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box_event_log_items.add_theme_constant_override("separation", 3)
+	scroll.add_child(box_event_log_items)
+
+func update_guidance_panel(info: Dictionary) -> void:
+	if panel_guidance == null or info.is_empty():
+		return
+	label_guidance_stage.text = str(info.get("stage", "GUIDANCE")).to_upper()
+	label_guidance_title.text = str(info.get("title", ""))
+	label_guidance_desc.text = str(info.get("explanation", ""))
+	label_guidance_action.text = "ACTION: " + str(info.get("action", ""))
+	label_guidance_progress.text = str(info.get("progress_text", ""))
+	var is_blocked: bool = info.get("is_blocked", false)
+	panel_guidance_blocker.visible = is_blocked
+	if is_blocked:
+		label_guidance_blocker.text = "BLOCKER: " + str(info.get("blocker_reason", ""))
+
+func update_event_log(events: Array) -> void:
+	if box_event_log_items == null:
+		return
+	for child in box_event_log_items.get_children():
+		child.queue_free()
+
+	# Display latest entries
+	var count: int = 0
+	for i in range(events.size() - 1, -1, -1):
+		var entry = events[i]
+		if not (entry is Dictionary):
+			continue
+		var lbl := Label.new()
+		var prefix: String = "[T%d] " % int(entry.get("tick", 0))
+		lbl.text = prefix + str(entry.get("message", ""))
+		lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		lbl.add_theme_font_size_override("font_size", 10)
+		var lvl: StringName = StringName(entry.get("level", &"info"))
+		match lvl:
+			&"success":
+				lbl.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
+			&"warning":
+				lbl.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+			&"alert":
+				lbl.add_theme_color_override("font_color", UITheme.COLOR_RED_ALERT)
+			_:
+				lbl.add_theme_color_override("font_color", Color(0.9, 0.9, 0.9))
+		box_event_log_items.add_child(lbl)
+		count += 1
+		if count >= 15:
+			break
+
+func is_event_log_visible() -> bool:
+	return panel_event_log != null and panel_event_log.visible
+
+func toggle_event_log_panel() -> void:
+	if panel_event_log != null:
+		panel_event_log.visible = not panel_event_log.visible
 
 func _create_badge(parent: Node, title: String, val: String, col: Color) -> Label:
 	var lbl := Label.new()

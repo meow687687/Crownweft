@@ -16,7 +16,9 @@ static func serialize(
 	auto_staffing_enabled: bool = false,
 	government: GovernmentState = null,
 	diplomacy: DiplomacyState = null,
-	regional_world: RegionalWorldState = null
+	regional_world: RegionalWorldState = null,
+	guidance = null,
+	event_log = null
 ) -> Dictionary:
 	var gov_dict: Dictionary = {
 		"enacted_policies": {},
@@ -39,6 +41,8 @@ static func serialize(
 			"sim_speed": sim_speed,
 			"auto_staffing_enabled": auto_staffing_enabled
 		},
+		"guidance": guidance.serialize() if guidance != null else {},
+		"event_log": event_log.serialize() if event_log != null else [],
 		"government": gov_dict,
 		"diplomacy": diplomacy.serialize() if diplomacy != null else DiplomacyState.new().serialize(),
 		"regional_world": regional_world.serialize() if regional_world != null else RegionalWorldState.new().serialize(),
@@ -198,6 +202,8 @@ static func deserialize(data: Dictionary) -> Dictionary:
 		"meta": meta,
 		"world_state": null,
 		"economy": EconomyState.new(),
+		"guidance": data.get("guidance", {}),
+		"event_log": data.get("event_log", []),
 		"buildings": [],
 		"citizens": [],
 		"military_units": [],

@@ -13,7 +13,10 @@ func create_job(resource_id: StringName, amount: int, source_inv: Inventory, des
 		return null
 	
 	# Validate destination can accept and has capacity
-	if not dest_inv.can_accept(resource_id, amount):
+	var is_self_transfer: bool = (source_inv == dest_inv)
+	if not is_self_transfer and not dest_inv.can_accept(resource_id, amount):
+		return null
+	if is_self_transfer and not dest_inv.accepts(resource_id):
 		return null
 	
 	# Atomically reserve
@@ -21,7 +24,13 @@ func create_job(resource_id: StringName, amount: int, source_inv: Inventory, des
 	if not out_ok:
 		return null
 	
-	var in_ok: bool = dest_inv.reserve_in(resource_id, amount)
+	var in_ok: bool = false
+	if is_self_transfer:
+		var current: int = dest_inv.get_reserved_in(resource_id)
+		dest_inv.reserved_in[resource_id] = current + amount
+		in_ok = true
+	else:
+		in_ok = dest_inv.reserve_in(resource_id, amount)
 	if not in_ok:
 		# Rollback source reservation
 		source_inv.release_reserved_out(resource_id, amount)
