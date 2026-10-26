@@ -14,9 +14,10 @@ func create_construction_site(
 	build_time: int,
 	construction_inv_id: int,
 	operational_capacity: int = 30,
-	operational_accepted: Array = []
+	operational_accepted: Array = [],
+	custom_footprint: Vector2i = Vector2i.ZERO
 ) -> BuildingState:
-	var b := BuildingState.new(entity_id, def_id, operational_capacity, operational_accepted)
+	var b := BuildingState.new(entity_id, def_id, operational_capacity, operational_accepted, custom_footprint)
 	b.tile_origin = origin
 	b.status = BuildingState.Status.PLANNED
 	b.construction_progress = 0.0

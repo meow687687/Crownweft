@@ -131,8 +131,7 @@ static func _closest_point_on_rect(rect: Rect2, point: Vector2) -> Vector2:
 	)
 
 func _building_rect(building: BuildingState) -> Rect2:
-	var def: Dictionary = BuildingCatalog.get_all_defs().get(building.definition_id, {})
-	var footprint: Vector2i = def.get("footprint", Vector2i(2, 2))
+	var footprint: Vector2i = building.get_footprint()
 	return Rect2(Vector2(building.tile_origin) * 16.0, Vector2(footprint) * 16.0)
 
 func _engage_building(
@@ -156,7 +155,7 @@ func _engage_building(
 				target.is_destroyed = true
 				building_destroyed.emit(target)
 	elif distance > 0.1:
-		var footprint: Vector2i = BuildingCatalog.get_all_defs().get(target.definition_id, {}).get("footprint", Vector2i(2, 2))
+		var footprint: Vector2i = target.get_footprint()
 		_move_unit_toward(
 			unit, def, closest, delta, pathfinding,
 			"building:%d" % target.entity_id, target.tile_origin, footprint

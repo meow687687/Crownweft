@@ -40,6 +40,7 @@ var selected_building: BuildingState = null
 # Building Placement Ghost
 var active_build_id: StringName = &""
 var hover_tile: Vector2i = Vector2i(-1, -1)
+var hover_footprint: Vector2i = Vector2i.ZERO
 var is_hover_valid: bool = false
 var _redraw_accumulator: float = 0.0
 const VISUAL_REFRESH_INTERVAL: float = 1.0 / 30.0
@@ -193,7 +194,7 @@ func _draw_buildings() -> void:
 	var defs: Dictionary = BuildingCatalog.get_all_defs()
 	for building: BuildingState in buildings:
 		var def_data: Dictionary = defs.get(building.definition_id, {})
-		var footprint: Vector2i = def_data.get("footprint", Vector2i(2, 2))
+		var footprint: Vector2i = building.get_footprint()
 		var b_pos: Vector2 = Vector2(building.tile_origin.x * TILE_SIZE, building.tile_origin.y * TILE_SIZE)
 		var b_size: Vector2 = Vector2(footprint.x * TILE_SIZE, footprint.y * TILE_SIZE)
 		var b_rect: Rect2 = Rect2(b_pos, b_size)
@@ -275,7 +276,7 @@ func _building_texture(building_id: StringName) -> Texture2D:
 func _draw_build_ghost() -> void:
 	var defs: Dictionary = BuildingCatalog.get_all_defs()
 	var def_info: Dictionary = defs.get(active_build_id, {})
-	var footprint: Vector2i = def_info.get("footprint", Vector2i(1, 1))
+	var footprint: Vector2i = hover_footprint if hover_footprint != Vector2i.ZERO else def_info.get("footprint", Vector2i(1, 1))
 	
 	var ghost_pos: Vector2 = Vector2(hover_tile.x * TILE_SIZE, hover_tile.y * TILE_SIZE)
 	var ghost_size: Vector2 = Vector2(footprint.x * TILE_SIZE, footprint.y * TILE_SIZE)
@@ -294,9 +295,12 @@ func _draw_build_ghost() -> void:
 			draw_rect(Rect2(sub_pos, Vector2(TILE_SIZE, TILE_SIZE)), outline_color, false, 0.8)
 
 	# Draw entrance / doorway indicator in placement preview
-	var entrance_offset: Vector2i = def_info.get("entrance_offset", Vector2i.ZERO)
-	if entrance_offset != Vector2i.ZERO:
-		var ent_world_tile: Vector2i = hover_tile + entrance_offset
+	var door_x: int = footprint.x / 2
+	var ent_offset: Vector2i = Vector2i(door_x, footprint.y)
+	if not def_info.get("is_resizable", false) and def_info.has("entrance_offset"):
+		ent_offset = def_info.get("entrance_offset", Vector2i.ZERO)
+	if ent_offset != Vector2i.ZERO:
+		var ent_world_tile: Vector2i = hover_tile + ent_offset
 		var ent_pos: Vector2 = Vector2(ent_world_tile.x * TILE_SIZE, ent_world_tile.y * TILE_SIZE)
 		var ent_rect: Rect2 = Rect2(ent_pos, Vector2(TILE_SIZE, TILE_SIZE))
 		var ent_color: Color = Color(0.2, 0.8, 1.0, 0.6) if is_hover_valid else Color(1.0, 0.2, 0.2, 0.6)

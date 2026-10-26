@@ -62,6 +62,7 @@ static func serialize(
 		var b_dict: Dictionary = {
 			"entity_id": b.entity_id,
 			"definition_id": str(b.definition_id),
+			"footprint": [b.footprint.x, b.footprint.y],
 			"tile_origin": [b.tile_origin.x, b.tile_origin.y],
 			"assigned_workers": b.assigned_workers,
 			"production_progress": b.production_progress,
@@ -218,6 +219,10 @@ static func deserialize(data: Dictionary) -> Dictionary:
 		)
 		var origin_arr: Array = b_dict["tile_origin"]
 		b.tile_origin = Vector2i(origin_arr[0], origin_arr[1])
+		var saved_fp = b_dict.get("footprint", null)
+		if saved_fp != null and saved_fp is Array and saved_fp.size() >= 2:
+			b.footprint = Vector2i(int(saved_fp[0]), int(saved_fp[1]))
+			b.recalculate_entrance(b.footprint)
 		b.assigned_workers = b_dict.get("assigned_workers", 0)
 		b.production_progress = b_dict.get("production_progress", 0)
 		b.current_block_reason = StringName(b_dict.get("block_reason", ""))

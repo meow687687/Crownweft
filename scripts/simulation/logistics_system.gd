@@ -125,8 +125,7 @@ func tick_haulers(
 			var original_destination: BuildingState = buildings_by_inventory.get(job.destination_inventory_id, null)
 			var original_reachable: bool = false
 			if original_destination != null and not original_destination.is_destroyed:
-				var original_def: Dictionary = BuildingCatalog.get_all_defs().get(original_destination.definition_id, {})
-				var original_footprint: Vector2i = original_def.get("footprint", Vector2i.ONE)
+				var original_footprint: Vector2i = original_destination.get_footprint()
 				original_reachable = not pathfinding.find_path_to_adjacent(
 					hauler.current_tile, original_destination.tile_origin, original_footprint
 				).is_empty()
@@ -243,8 +242,6 @@ func _find_alternate_destination(
 			continue
 		if candidate.inventory.get_free_capacity() < hauler.carried_amount:
 			continue
-		var definition: Dictionary = BuildingCatalog.get_all_defs().get(candidate.definition_id, {})
-		var footprint: Vector2i = definition.get("footprint", Vector2i.ONE)
 		var route_res: Dictionary = pathfinding.find_path_to_entrance(
 			hauler.current_tile, candidate
 		)

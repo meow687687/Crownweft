@@ -65,8 +65,7 @@ func _try_consume_food(
 			var building: BuildingState = food_buildings_by_inventory.get(inv.owner_id, null)
 			if building == null:
 				continue
-			var building_def: Dictionary = BuildingCatalog.get_all_defs().get(building.definition_id, {})
-			var footprint: Vector2i = building_def.get("footprint", Vector2i.ONE)
+			var footprint: Vector2i = building.get_footprint()
 			var path: Array[Vector2i] = pathfinding.find_path_to_adjacent(
 				citizen.position_tile, building.tile_origin, footprint
 			)

@@ -32,6 +32,9 @@ var current_tick: int = 0
 
 # Placement / Selection state
 var active_build_id: StringName = &""
+var active_build_footprint: Vector2i = Vector2i.ZERO
+var is_dragging_footprint: bool = false
+var drag_start_tile: Vector2i = Vector2i(-1, -1)
 var selected_building: BuildingState = null
 var selected_citizen: CitizenState = null
 
@@ -107,7 +110,12 @@ func _setup_signals() -> void:
 	)
 	ui.build_selected.connect(func(b_id: StringName):
 		active_build_id = b_id
+		var def_info: Dictionary = BuildingCatalog.get_all_defs().get(b_id, {})
+		active_build_footprint = def_info.get("footprint", Vector2i(2, 2))
+		is_dragging_footprint = false
+		drag_start_tile = Vector2i(-1, -1)
 		renderer.active_build_id = b_id
+		renderer.hover_footprint = active_build_footprint
 		renderer.queue_redraw()
 	)
 	ui.toggle_overlay_requested.connect(func():
@@ -125,15 +133,41 @@ func _process(delta: float) -> void:
 	if active_build_id != &"":
 		var mouse_world: Vector2 = get_global_mouse_position()
 		var tile_coord: Vector2i = Vector2i(int(mouse_world.x / 16.0), int(mouse_world.y / 16.0))
-		renderer.hover_tile = tile_coord
+		
+		if is_dragging_footprint and drag_start_tile != Vector2i(-1, -1):
+			var min_x: int = mini(drag_start_tile.x, tile_coord.x)
+			var min_y: int = mini(drag_start_tile.y, tile_coord.y)
+			var w: int = absi(tile_coord.x - drag_start_tile.x) + 1
+			var h: int = absi(tile_coord.y - drag_start_tile.y) + 1
+			active_build_footprint = BuildingCatalog.clamp_footprint(active_build_id, Vector2i(w, h))
+			renderer.hover_tile = Vector2i(min_x, min_y)
+		else:
+			renderer.hover_tile = tile_coord
+			
 		renderer.active_build_id = active_build_id
-		var check: Dictionary = can_place_building_at(active_build_id, tile_coord)
+		renderer.hover_footprint = active_build_footprint
+		var check: Dictionary = can_place_building_at(active_build_id, renderer.hover_tile, active_build_footprint)
 		renderer.is_hover_valid = check.get("ok", false)
+		
+		if ui != null:
+			var cost_dict: Dictionary = BuildingCatalog.get_cost_for_footprint(active_build_id, active_build_footprint)
+			var cost_str: String = ""
+			for r in cost_dict:
+				cost_str += "%s: %d " % [str(r).capitalize(), cost_dict[r]]
+			var cap_val: int = BuildingCatalog.get_capacity_for_footprint(active_build_id, active_build_footprint)
+			var info_str: String = "Size: %dx%d  |  Cost: %s |  Cap: %d  |  %s" % [
+				active_build_footprint.x, active_build_footprint.y,
+				cost_str.strip_edges() if cost_str != "" else "Free",
+				cap_val,
+				check.get("reason", "")
+			]
+			ui.update_build_prompt(active_build_id, info_str)
 		renderer.queue_redraw()
 	else:
 		if renderer.hover_tile != Vector2i(-1, -1):
 			renderer.hover_tile = Vector2i(-1, -1)
 			renderer.active_build_id = &""
+			renderer.hover_footprint = Vector2i.ZERO
 			renderer.queue_redraw()
 
 	if sim_speed_multiplier > 0.0:
@@ -205,8 +239,9 @@ func _cleanup_destroyed_buildings() -> void:
 				carrier.carried_resource = &""
 				carrier.carried_amount = 0
 				carrier.clear_path()
-		for y in range(BuildingCatalog.get_all_defs().get(building.definition_id, {}).get("footprint", Vector2i(2, 2)).y):
-			for x in range(BuildingCatalog.get_all_defs().get(building.definition_id, {}).get("footprint", Vector2i(2, 2)).x):
+		var b_fp: Vector2i = building.get_footprint()
+		for y in range(b_fp.y):
+			for x in range(b_fp.x):
 				var coord: Vector2i = building.tile_origin + Vector2i(x, y)
 				var tile: WorldTile = world_state.get_tile(coord)
 				if tile == null or tile.building_id != building.entity_id:
@@ -235,7 +270,29 @@ func _find_inventory_by_id(inventory_id: int) -> Inventory:
 	return null
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventMouseButton and event.pressed:
+	if active_build_id != &"" and BuildingCatalog.is_building_resizable(active_build_id):
+		if event is InputEventKey and event.pressed:
+			var kb: InputEventKey = event as InputEventKey
+			var min_fp: Vector2i = BuildingCatalog.get_min_footprint(active_build_id)
+			var max_fp: Vector2i = BuildingCatalog.get_max_footprint(active_build_id)
+			if kb.keycode == KEY_BRACKETLEFT:
+				active_build_footprint.x = maxi(min_fp.x, active_build_footprint.x - 1)
+				get_viewport().set_input_as_handled()
+				return
+			elif kb.keycode == KEY_BRACKETRIGHT:
+				active_build_footprint.x = mini(max_fp.x, active_build_footprint.x + 1)
+				get_viewport().set_input_as_handled()
+				return
+			elif kb.keycode == KEY_MINUS:
+				active_build_footprint.y = maxi(min_fp.y, active_build_footprint.y - 1)
+				get_viewport().set_input_as_handled()
+				return
+			elif kb.keycode == KEY_EQUAL:
+				active_build_footprint.y = mini(max_fp.y, active_build_footprint.y + 1)
+				get_viewport().set_input_as_handled()
+				return
+
+	if event is InputEventMouseButton:
 		var mb: InputEventMouseButton = event as InputEventMouseButton
 		
 		# Protection: Ignore clicks if mouse is over top HUD or bottom palette
@@ -250,48 +307,72 @@ func _unhandled_input(event: InputEvent) -> void:
 		var tile_coord: Vector2i = Vector2i(int(mouse_world.x / 16.0), int(mouse_world.y / 16.0))
 		
 		if mb.button_index == MOUSE_BUTTON_LEFT:
-			if active_build_id != &"":
-				if active_build_id == &"road":
-					build_road(tile_coord)
+			if mb.pressed:
+				if active_build_id != &"":
+					if active_build_id == &"road":
+						build_road(tile_coord)
+					elif BuildingCatalog.is_building_resizable(active_build_id):
+						is_dragging_footprint = true
+						drag_start_tile = tile_coord
+					else:
+						var res = place_building(active_build_id, tile_coord, false, active_build_footprint)
+						if res == null:
+							var check = can_place_building_at(active_build_id, tile_coord, active_build_footprint)
+							ui.show_toast(check.get("reason", "Cannot place here!"), true)
+						else:
+							var defs = BuildingCatalog.get_all_defs()
+							ui.show_toast("Constructed %s" % defs.get(active_build_id, {}).get("display_name", "Building"), false)
 				else:
-					var res = place_building(active_build_id, tile_coord)
+					var clicked_citizen: CitizenState = _find_citizen_at(mouse_world)
+					if clicked_citizen != null:
+						selected_citizen = clicked_citizen
+						selected_building = null
+						selected_units.clear()
+						renderer.selected_building = null
+						renderer.selected_units = selected_units
+						_update_citizen_inspector()
+						renderer.queue_redraw()
+					else:
+						selected_citizen = null
+						var clicked_unit: MilitaryUnitState = _find_unit_at(mouse_world)
+						if clicked_unit != null and clicked_unit.faction_id == 0:
+							selected_units = [clicked_unit]
+							renderer.selected_units = selected_units
+							selected_building = null
+							renderer.selected_building = null
+							ui.show_building_details(null, {})
+							renderer.queue_redraw()
+						else:
+							selected_units.clear()
+							renderer.selected_units = selected_units
+							_select_building_at(tile_coord)
+			else: # Button released
+				if is_dragging_footprint:
+					is_dragging_footprint = false
+					var place_origin: Vector2i = renderer.hover_tile
+					var res = place_building(active_build_id, place_origin, false, active_build_footprint)
 					if res == null:
-						var check = can_place_building_at(active_build_id, tile_coord)
+						var check = can_place_building_at(active_build_id, place_origin, active_build_footprint)
 						ui.show_toast(check.get("reason", "Cannot place here!"), true)
 					else:
 						var defs = BuildingCatalog.get_all_defs()
-						ui.show_toast("Constructed %s" % defs.get(active_build_id, {}).get("display_name", "Building"), false)
-			else:
-				var clicked_citizen: CitizenState = _find_citizen_at(mouse_world)
-				if clicked_citizen != null:
-					selected_citizen = clicked_citizen
-					selected_building = null
-					selected_units.clear()
-					renderer.selected_building = null
-					renderer.selected_units = selected_units
-					_update_citizen_inspector()
-					renderer.queue_redraw()
-				else:
-					selected_citizen = null
-					var clicked_unit: MilitaryUnitState = _find_unit_at(mouse_world)
-					if clicked_unit != null and clicked_unit.faction_id == 0:
-						selected_units = [clicked_unit]
-						renderer.selected_units = selected_units
-						selected_building = null
-						renderer.selected_building = null
-						ui.show_building_details(null, {})
-						renderer.queue_redraw()
-					else:
-						selected_units.clear()
-						renderer.selected_units = selected_units
-						_select_building_at(tile_coord)
+						ui.show_toast("Constructed %s (%dx%d)" % [
+							defs.get(active_build_id, {}).get("display_name", "Building"),
+							active_build_footprint.x,
+							active_build_footprint.y
+						], false)
+					drag_start_tile = Vector2i(-1, -1)
 					
-		elif mb.button_index == MOUSE_BUTTON_RIGHT:
+		elif mb.button_index == MOUSE_BUTTON_RIGHT and mb.pressed:
+			is_dragging_footprint = false
+			drag_start_tile = Vector2i(-1, -1)
 			if active_build_id != &"":
 				active_build_id = &""
+				active_build_footprint = Vector2i.ZERO
 				ui.set_active_build_mode(&"")
 				renderer.active_build_id = &""
 				renderer.hover_tile = Vector2i(-1, -1)
+				renderer.hover_footprint = Vector2i.ZERO
 				renderer.queue_redraw()
 				ui.show_toast("Build mode cancelled", false)
 				return
@@ -336,7 +417,7 @@ func _on_worker_assignment_changed(delta: int) -> void:
 		return
 	var defs: Dictionary = BuildingCatalog.get_all_defs()
 	var def_info: Dictionary = defs.get(selected_building.definition_id, {})
-	var max_slots: int = 3 if selected_building.is_under_construction() else int(def_info.get("worker_slots", 0))
+	var max_slots: int = 3 if selected_building.is_under_construction() else BuildingCatalog.get_worker_slots_for_footprint(selected_building.definition_id, selected_building.get_footprint())
 	if delta > 0:
 		var available: CitizenState = null
 		for citizen: CitizenState in citizens:
@@ -381,8 +462,7 @@ func _select_building_at(tile_coord: Vector2i) -> void:
 	selected_citizen = null
 	var defs: Dictionary = BuildingCatalog.get_all_defs()
 	for b in buildings:
-		var footprint: Vector2i = defs.get(b.definition_id, {}).get("footprint", Vector2i(2, 2))
-		var rect: Rect2i = Rect2i(b.tile_origin, footprint)
+		var rect: Rect2i = Rect2i(b.tile_origin, b.get_footprint())
 		if rect.has_point(tile_coord):
 			selected_building = b
 			break
@@ -394,13 +474,17 @@ func _select_building_at(tile_coord: Vector2i) -> void:
 		ui.show_building_details(null, {})
 	renderer.queue_redraw()
 
-func can_place_building_at(b_id: StringName, coord: Vector2i) -> Dictionary:
+func can_place_building_at(b_id: StringName, coord: Vector2i, custom_footprint: Vector2i = Vector2i.ZERO) -> Dictionary:
 	var defs: Dictionary = BuildingCatalog.get_all_defs()
 	var def_info: Dictionary = defs.get(b_id, {})
 	if def_info.is_empty():
 		return {"ok": false, "reason": "Unknown building"}
 		
-	var footprint: Vector2i = def_info.get("footprint", Vector2i(2, 2))
+	var footprint: Vector2i = custom_footprint
+	if footprint == Vector2i.ZERO:
+		footprint = def_info.get("footprint", Vector2i(2, 2))
+	else:
+		footprint = BuildingCatalog.clamp_footprint(b_id, footprint)
 	
 	# Bounds and terrain validation
 	for dy in range(footprint.y):
@@ -419,7 +503,7 @@ func can_place_building_at(b_id: StringName, coord: Vector2i) -> Dictionary:
 				return {"ok": false, "reason": "Tile is occupied or blocked"}
 				
 	# Entrance validation
-	var entrance_offset: Vector2i = def_info.get("entrance_offset", Vector2i.ZERO)
+	var entrance_offset: Vector2i = Vector2i(footprint.x / 2, footprint.y) if BuildingCatalog.is_building_resizable(b_id) else def_info.get("entrance_offset", Vector2i.ZERO)
 	if entrance_offset != Vector2i.ZERO:
 		var ent_tile: Vector2i = coord + entrance_offset
 		if not world_state.is_valid_coord(ent_tile):
@@ -488,25 +572,36 @@ func remove_road(coord: Vector2i) -> bool:
 		ui.show_toast("Removed road section", false)
 	return true
 
-func place_building(b_id: StringName, coord: Vector2i, bypass_cost: bool = false) -> BuildingState:
-	var check: Dictionary = can_place_building_at(b_id, coord)
+func place_building(b_id: StringName, coord: Vector2i, bypass_cost: bool = false, custom_footprint: Vector2i = Vector2i.ZERO) -> BuildingState:
+	var defs: Dictionary = BuildingCatalog.get_all_defs()
+	var def_info: Dictionary = defs.get(b_id, {})
+	if def_info.is_empty():
+		return null
+		
+	var footprint: Vector2i = custom_footprint
+	if footprint == Vector2i.ZERO:
+		footprint = def_info.get("footprint", Vector2i(2, 2))
+	else:
+		footprint = BuildingCatalog.clamp_footprint(b_id, footprint)
+
+	var check: Dictionary = can_place_building_at(b_id, coord, footprint)
 	if not bypass_cost and not check.get("ok", false):
 		return null
 		
-	var defs: Dictionary = BuildingCatalog.get_all_defs()
-	var def_info: Dictionary = defs.get(b_id, {})
-	var footprint: Vector2i = def_info.get("footprint", Vector2i(2, 2))
-	var cost: Dictionary = def_info.get("cost", {}).duplicate()
-	var build_time: int = int(def_info.get("build_time", 8))
+	var cost: Dictionary = BuildingCatalog.get_cost_for_footprint(b_id, footprint)
+	var build_time: int = BuildingCatalog.get_build_time_for_footprint(b_id, footprint)
+	var capacity: int = BuildingCatalog.get_capacity_for_footprint(b_id, footprint)
 	
 	var b_state: BuildingState = null
 	if bypass_cost or cost.is_empty():
 		b_state = BuildingState.new(
 			next_entity_id,
 			b_id,
-			def_info.get("capacity", 30),
+			capacity,
 			def_info.get("accepted", [])
 		)
+		b_state.footprint = footprint
+		b_state.recalculate_entrance(footprint)
 		b_state.status = BuildingState.Status.ACTIVE
 		b_state.construction_progress = 1.0
 		b_state.construction_ticks = build_time
@@ -521,8 +616,9 @@ func place_building(b_id: StringName, coord: Vector2i, bypass_cost: bool = false
 			cost,
 			build_time,
 			const_inv_id,
-			def_info.get("capacity", 30),
-			def_info.get("accepted", [])
+			capacity,
+			def_info.get("accepted", []),
+			footprint
 		)
 		next_entity_id += 2
 
@@ -549,7 +645,7 @@ func place_building(b_id: StringName, coord: Vector2i, bypass_cost: bool = false
 func _on_building_completed(building: BuildingState) -> void:
 	var defs: Dictionary = BuildingCatalog.get_all_defs()
 	var def_info: Dictionary = defs.get(building.definition_id, {})
-	var max_slots: int = int(def_info.get("worker_slots", 0))
+	var max_slots: int = BuildingCatalog.get_worker_slots_for_footprint(building.definition_id, building.get_footprint())
 	
 	# Transition assigned builders to permanent role up to worker_slots, unassign excess
 	var converted: int = 0
@@ -567,7 +663,7 @@ func _on_building_completed(building: BuildingState) -> void:
 	building.assigned_workers = converted
 	
 	# Ensure pathfinding and collision flags are reaffirmed
-	var footprint: Vector2i = def_info.get("footprint", Vector2i(2, 2))
+	var footprint: Vector2i = building.get_footprint()
 	for dy in range(footprint.y):
 		for dx in range(footprint.x):
 			var c: Vector2i = building.tile_origin + Vector2i(dx, dy)
@@ -613,8 +709,7 @@ func cancel_construction_site(building: BuildingState) -> void:
 			citizen.target_tile = citizen.position_tile
 			
 	# Clear world tiles and pathfinding
-	var defs: Dictionary = BuildingCatalog.get_all_defs()
-	var footprint: Vector2i = defs.get(building.definition_id, {}).get("footprint", Vector2i(2, 2))
+	var footprint: Vector2i = building.get_footprint()
 	for dy in range(footprint.y):
 		for dx in range(footprint.x):
 			var coord: Vector2i = building.tile_origin + Vector2i(dx, dy)
@@ -831,7 +926,7 @@ func _update_worker_movement() -> void:
 			citizen.target_tile = citizen.position_tile
 			continue
 
-		var footprint: Vector2i = defs.get(workplace.definition_id, {}).get("footprint", Vector2i.ONE)
+		var footprint: Vector2i = workplace.get_footprint()
 		var slot_idx: int = building_worker_slots.get(workplace.entity_id, 0)
 		building_worker_slots[workplace.entity_id] = slot_idx + 1
 
@@ -889,8 +984,7 @@ func _update_worker_movement() -> void:
 				citizen.target_tile = citizen.position_tile
 
 func _get_workers_present_at_building(building: BuildingState) -> Array[CitizenState]:
-	var defs: Dictionary = BuildingCatalog.get_all_defs()
-	var footprint: Vector2i = defs.get(building.definition_id, {}).get("footprint", Vector2i.ONE)
+	var footprint: Vector2i = building.get_footprint()
 	var list: Array[CitizenState] = []
 	for citizen: CitizenState in citizens:
 		if citizen.workplace_id != building.entity_id or citizen.role_id == &"hauler":
@@ -964,7 +1058,7 @@ func _update_housing_and_rest() -> void:
 				c.target_tile = c.position_tile
 				continue
 
-			var home_footprint: Vector2i = defs.get(home.definition_id, {}).get("footprint", Vector2i.ONE)
+			var home_footprint: Vector2i = home.get_footprint()
 			if _is_adjacent_to_building(c.position_tile, home, home_footprint):
 				c.move_state = CitizenState.MoveState.IDLE
 				c.path.clear()
@@ -1220,8 +1314,9 @@ func _on_load_game() -> void:
 	var max_job_id: int = 0
 	for b: BuildingState in buildings:
 		next_entity_id = maxi(next_entity_id, b.entity_id + 1)
-		for dy in range(defs.get(b.definition_id, {}).get("footprint", Vector2i(2, 2)).y):
-			for dx in range(defs.get(b.definition_id, {}).get("footprint", Vector2i(2, 2)).x):
+		var b_fp: Vector2i = b.get_footprint()
+		for dy in range(b_fp.y):
+			for dx in range(b_fp.x):
 				var c: Vector2i = b.tile_origin + Vector2i(dx, dy)
 				pathfinding.set_solid(c, true)
 	for c: CitizenState in citizens:

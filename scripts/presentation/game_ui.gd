@@ -330,9 +330,20 @@ func set_active_build_mode(b_id: StringName) -> void:
 		
 	if b_id != &"":
 		panel_build_prompt.visible = true
-		label_build_prompt.text = "BUILD MODE: %s  |  Left-click: place  |  Right-click: cancel" % str(b_id).capitalize()
+		update_build_prompt(b_id, "")
 	else:
 		panel_build_prompt.visible = false
+
+func update_build_prompt(b_id: StringName, info_str: String = "") -> void:
+	if label_build_prompt == null or b_id == &"":
+		return
+	var name_str: String = BuildingCatalog.get_all_defs().get(b_id, {}).get("display_name", str(b_id).capitalize())
+	var is_res: bool = BuildingCatalog.is_building_resizable(b_id)
+	var hint: String = "Drag or [/] {-} to resize | L-click: place | R-click: cancel" if is_res else "L-click: place | R-click: cancel"
+	if info_str != "":
+		label_build_prompt.text = "BUILD MODE: %s  [%s]\n%s" % [name_str.to_upper(), info_str, hint]
+	else:
+		label_build_prompt.text = "BUILD MODE: %s  |  %s" % [name_str.to_upper(), hint]
 
 func show_toast(msg: String, is_error: bool = false) -> void:
 	if panel_toast == null or label_toast == null:
@@ -461,8 +472,12 @@ func show_building_details(building: BuildingState, def_info: Dictionary, worker
 			box_recruitment.visible = false
 		return
 
+	var b_fp: Vector2i = building.get_footprint()
+	var name_str: String = str(def_info.get("display_name", str(building.definition_id)))
+	if BuildingCatalog.is_building_resizable(building.definition_id):
+		name_str += " (%dx%d)" % [b_fp.x, b_fp.y]
 	label_inspector_title.text = "%s  |  HP %d/%d" % [
-		str(def_info.get("display_name", str(building.definition_id))),
+		name_str,
 		building.health,
 		building.max_health
 	]
@@ -507,7 +522,7 @@ func show_building_details(building: BuildingState, def_info: Dictionary, worker
 		progress_inspector.visible = false
 		
 	# Workers
-	var max_slots: int = def_info.get("worker_slots", 0)
+	var max_slots: int = BuildingCatalog.get_worker_slots_for_footprint(building.definition_id, building.get_footprint())
 	if workers_present >= 0:
 		label_inspector_workers.text = "Workers: %d assigned / %d at work / %d slots" % [building.assigned_workers, workers_present, max_slots]
 	else:

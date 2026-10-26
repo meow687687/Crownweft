@@ -32,34 +32,63 @@ var construction_inventory: Inventory = null
 var construction_block_reason: StringName = &""
 
 # Explicit building entrance & doorway routing properties
+@export var footprint: Vector2i = Vector2i(2, 2)
 var entrance_offset: Vector2i = Vector2i.ZERO
 var doorway_tile: Vector2i = Vector2i.ZERO
 var staging_offsets: Array[Vector2i] = []
 
-func _init(p_entity_id: int = 0, p_def_id: StringName = &"", p_capacity: int = 50, p_accepted: Array = []) -> void:
+func _init(p_entity_id: int = 0, p_def_id: StringName = &"", p_capacity: int = 50, p_accepted: Array = [], p_footprint: Vector2i = Vector2i.ZERO) -> void:
 	entity_id = p_entity_id
 	definition_id = p_def_id
 	inventory = Inventory.new(p_entity_id, p_capacity, p_accepted)
-	if p_def_id != &"":
-		_init_entrance_from_catalog(p_def_id)
-
-func _init_entrance_from_catalog(p_def_id: StringName) -> void:
 	var defs: Dictionary = BuildingCatalog.get_all_defs()
 	var def_info: Dictionary = defs.get(p_def_id, {})
-	if not def_info.is_empty():
+	if p_footprint != Vector2i.ZERO:
+		footprint = p_footprint
+	elif not def_info.is_empty():
+		footprint = def_info.get("footprint", Vector2i(2, 2))
+	if p_def_id != &"":
+		recalculate_entrance(footprint)
+
+func recalculate_entrance(new_footprint: Vector2i = Vector2i.ZERO) -> void:
+	if new_footprint != Vector2i.ZERO:
+		footprint = new_footprint
+	var defs: Dictionary = BuildingCatalog.get_all_defs()
+	var def_info: Dictionary = defs.get(definition_id, {})
+	var is_resizable: bool = def_info.get("is_resizable", false)
+	
+	if not is_resizable and def_info.has("entrance_offset"):
 		entrance_offset = def_info.get("entrance_offset", Vector2i.ZERO)
 		doorway_tile = def_info.get("doorway_tile", Vector2i.ZERO)
 		var stagings: Array = def_info.get("staging_offsets", [])
 		staging_offsets.clear()
 		for s in stagings:
 			staging_offsets.append(s as Vector2i)
+		return
+
+	# Dynamic entrance and doorway calculation for variable footprints
+	var door_x: int = footprint.x / 2
+	var door_y: int = footprint.y - 1
+	doorway_tile = Vector2i(door_x, door_y)
+	entrance_offset = Vector2i(door_x, footprint.y)
+	
+	staging_offsets.clear()
+	staging_offsets.append(Vector2i(door_x, footprint.y))
+	if door_x > 0:
+		staging_offsets.append(Vector2i(door_x - 1, footprint.y))
+	if door_x + 1 < footprint.x:
+		staging_offsets.append(Vector2i(door_x + 1, footprint.y))
+	staging_offsets.append(Vector2i(door_x, footprint.y + 1))
+
+func get_footprint() -> Vector2i:
+	return footprint
+
+func _init_entrance_from_catalog(p_def_id: StringName) -> void:
+	recalculate_entrance(footprint)
 
 func get_entrance_tile() -> Vector2i:
 	if entrance_offset != Vector2i.ZERO:
 		return tile_origin + entrance_offset
-	# Default fallback to south edge center
-	var defs: Dictionary = BuildingCatalog.get_all_defs()
-	var footprint: Vector2i = defs.get(definition_id, {}).get("footprint", Vector2i(2, 2))
 	return tile_origin + Vector2i(footprint.x / 2, footprint.y)
 
 func get_doorway_world_tile() -> Vector2i:
