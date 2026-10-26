@@ -90,7 +90,8 @@ func cancel_construction_site(
 	building: BuildingState,
 	job_board: JobBoard,
 	refund_inventory: Inventory,
-	inventories_by_id: Dictionary
+	inventories_by_id: Dictionary,
+	fallback_inventories: Array[Inventory] = []
 ) -> Dictionary:
 	var refund_summary: Dictionary = {}
 	if building == null:
@@ -109,10 +110,10 @@ func cancel_construction_site(
 			var dst_inv: Inventory = building.construction_inventory
 			
 			if job.status == HaulJob.Status.IN_TRANSIT:
-				# Cargo already picked up: do not destroy it! Release destination reservation and mark blocked for rerouting
+				# Cargo already picked up: do not destroy it! Release destination reservation and clear destination for rerouting
 				if dst_inv != null and job.reserved_amount > 0:
 					dst_inv.release_reserved_in(job.resource_id, job.reserved_amount)
-				job.destination_inventory_id = refund_inventory.owner_id if refund_inventory != null else -1
+				job.destination_inventory_id = -1
 				job.reserved_amount = 0
 				job.status = HaulJob.Status.BLOCKED
 				job.blocked_reason = "CONSTRUCTION_CANCELLED_CARGO_REROUTED"
@@ -120,16 +121,50 @@ func cancel_construction_site(
 				# Pre-pickup: cancel job and release source/destination reservations cleanly
 				job_board.cancel_job(job, src_inv, dst_inv, "CONSTRUCTION_CANCELLED")
 				
-	# 2. Refund delivered materials to refund_inventory according to recovery rule
-	if building.construction_inventory != null and refund_inventory != null:
+	# 2. Refund delivered materials to refund_inventory (Town Hall), fallback storages, or an explicit ground pile
+	if building.construction_inventory != null:
+		var candidate_inventories: Array[Inventory] = []
+		if refund_inventory != null:
+			candidate_inventories.append(refund_inventory)
+		for fb_inv: Inventory in fallback_inventories:
+			if fb_inv != null and fb_inv != refund_inventory and not fb_inv in candidate_inventories:
+				candidate_inventories.append(fb_inv)
+				
 		for res_id: StringName in building.construction_inventory.quantities.keys():
-			var qty: int = building.construction_inventory.get_quantity(res_id)
-			if qty > 0:
-				var accepted_amount: int = mini(qty, refund_inventory.get_free_capacity())
-				if accepted_amount > 0:
-					refund_inventory.add_resource(res_id, accepted_amount, "CONSTRUCTION_SALVAGE", false)
-					building.construction_inventory.remove_resource(res_id, accepted_amount, "CONSTRUCTION_SALVAGE", false)
-					refund_summary[res_id] = accepted_amount
+			var rem_qty: int = building.construction_inventory.get_quantity(res_id)
+			if rem_qty <= 0:
+				continue
+				
+			var total_refunded_for_res: int = 0
+			# Step 2a: Try refunding into candidate inventories
+			for target_inv: Inventory in candidate_inventories:
+				if rem_qty <= 0:
+					break
+				if not target_inv.accepts(res_id):
+					continue
+				var free_cap: int = target_inv.get_free_capacity()
+				if free_cap <= 0:
+					continue
+				var transfer: int = mini(rem_qty, free_cap)
+				target_inv.add_resource(res_id, transfer, "CONSTRUCTION_SALVAGE", false)
+				building.construction_inventory.remove_resource(res_id, transfer, "CONSTRUCTION_SALVAGE", false)
+				rem_qty -= transfer
+				total_refunded_for_res += transfer
+				
+			# Step 2b: Overflow handling: if storages are full, preserve 100% of resources in an explicit ground pile
+			if rem_qty > 0:
+				var ground_pile: Inventory = refund_summary.get("ground_pile", null)
+				if ground_pile == null:
+					var pile_id: int = building.entity_id + 90000
+					ground_pile = Inventory.new(pile_id, 500, [])
+					refund_summary["ground_pile"] = ground_pile
+				ground_pile.add_resource(res_id, rem_qty, "CONSTRUCTION_SALVAGE_OVERFLOW_GROUND_PILE", false)
+				building.construction_inventory.remove_resource(res_id, rem_qty, "CONSTRUCTION_SALVAGE_OVERFLOW_GROUND_PILE", false)
+				total_refunded_for_res += rem_qty
+				rem_qty = 0
+				
+			if total_refunded_for_res > 0:
+				refund_summary[res_id] = total_refunded_for_res
 					
 	building.status = BuildingState.Status.DESTROYED
 	building.is_destroyed = true

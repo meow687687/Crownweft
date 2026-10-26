@@ -135,4 +135,18 @@ static func get_all_defs() -> Dictionary:
 		"color": Color(0.65, 0.55, 0.4) # Dirt tan
 	}
 	
+	# 10. Ground Pile (Salvage / Overflow storage)
+	defs[&"ground_pile"] = {
+		"id": &"ground_pile",
+		"health": 50,
+		"display_name": "Resource Pile",
+		"cost": {},
+		"worker_slots": 0,
+		"capacity": 500,
+		"accepted": [], # Accepts all resources
+		"footprint": Vector2i(1, 1),
+		"build_time": 0,
+		"color": Color(0.7, 0.6, 0.4) # Burlap tan
+	}
+	
 	return defs

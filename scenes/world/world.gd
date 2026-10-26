@@ -83,16 +83,18 @@ func _init_simulation() -> void:
 			logistics.register_hauler(citizen.id, citizen.position_tile)
 			
 	# Center camera on start settlement
-	camera.position = Vector2(th_pos.x * 16.0, th_pos.y * 16.0)
+	if camera != null:
+		camera.position = Vector2(th_pos.x * 16.0, th_pos.y * 16.0)
 	
 	# Pass state to renderer
-	renderer.world_state = world_state
-	renderer.buildings = buildings
-	renderer.citizens = citizens
-	renderer.military_units = military_units
-	renderer.selected_units = selected_units
-	renderer.active_jobs = []
-	renderer.queue_redraw()
+	if renderer != null:
+		renderer.world_state = world_state
+		renderer.buildings = buildings
+		renderer.citizens = citizens
+		renderer.military_units = military_units
+		renderer.selected_units = selected_units
+		renderer.active_jobs = []
+		renderer.queue_redraw()
 
 func _setup_signals() -> void:
 	ui.speed_changed.connect(func(speed: float):
@@ -475,7 +477,8 @@ func place_building(b_id: StringName, coord: Vector2i, bypass_cost: bool = false
 			pathfinding.set_solid(c, true)
 			
 	buildings.append(b_state)
-	renderer.queue_redraw()
+	if renderer != null:
+		renderer.queue_redraw()
 	return b_state
 
 func _on_building_completed(building: BuildingState) -> void:
@@ -510,22 +513,30 @@ func _on_building_completed(building: BuildingState) -> void:
 				tile.building_id = building.entity_id
 				pathfinding.set_solid(c, true)
 				
-	if selected_building == building:
+	if selected_building == building and ui != null:
 		ui.show_building_details(building, def_info, _count_workers_at_building(building))
-	renderer.queue_redraw()
-	ui.show_toast("%s completed and active!" % def_info.get("display_name", str(building.definition_id)), false)
+	if renderer != null:
+		renderer.queue_redraw()
+	if ui != null:
+		ui.show_toast("%s completed and active!" % def_info.get("display_name", str(building.definition_id)), false)
 
 func cancel_construction_site(building: BuildingState) -> void:
 	if building == null or not building.is_under_construction():
 		return
 	var main_inv: Inventory = buildings[0].inventory if not buildings.is_empty() else null
+	var fallback_invs: Array[Inventory] = []
+	for b: BuildingState in buildings:
+		if b != building and b.status == BuildingState.Status.ACTIVE and b.definition_id in [&"storehouse", &"town_hall"]:
+			if b.inventory != main_inv and b.inventory != null:
+				fallback_invs.append(b.inventory)
+				
 	var inv_map: Dictionary = {}
 	for b: BuildingState in buildings:
 		inv_map[b.inventory.owner_id] = b.inventory
 		if b.construction_inventory != null:
 			inv_map[b.construction_inventory.owner_id] = b.construction_inventory
 	
-	var refunded: Dictionary = construction.cancel_construction_site(building, job_board, main_inv, inv_map)
+	var refunded: Dictionary = construction.cancel_construction_site(building, job_board, main_inv, inv_map, fallback_invs)
 	
 	# Release any assigned builders
 	for citizen: CitizenState in citizens:
@@ -549,12 +560,33 @@ func cancel_construction_site(building: BuildingState) -> void:
 				pathfinding.set_solid(coord, not tile.is_walkable)
 				
 	buildings.erase(building)
+	
+	# If an overflow ground pile was created, register it as a visible ground pile building in the world
+	if refunded.has("ground_pile"):
+		var pile_inv: Inventory = refunded["ground_pile"]
+		var pile_b: BuildingState = BuildingState.new(pile_inv.owner_id, &"ground_pile", pile_inv.capacity, [])
+		pile_b.tile_origin = building.tile_origin
+		pile_b.inventory = pile_inv
+		pile_b.status = BuildingState.Status.ACTIVE
+		pile_b.construction_progress = 1.0
+		buildings.append(pile_b)
+		
+		var pile_tile: WorldTile = world_state.get_tile(pile_b.tile_origin)
+		if pile_tile != null:
+			pile_tile.is_buildable = false
+			pile_tile.is_walkable = false
+			pile_tile.building_id = pile_b.entity_id
+			pathfinding.set_solid(pile_b.tile_origin, true)
+	
 	if selected_building == building:
 		selected_building = null
-		ui.show_building_details(null, {})
-	renderer.buildings = buildings
-	renderer.queue_redraw()
-	ui.show_toast("Construction site cancelled", false)
+		if ui != null:
+			ui.show_building_details(null, {})
+	if renderer != null:
+		renderer.buildings = buildings
+		renderer.queue_redraw()
+	if ui != null:
+		ui.show_toast("Construction site cancelled", false)
 
 func _try_deduct_cost(cost: Dictionary) -> bool:
 	if cost.is_empty():
