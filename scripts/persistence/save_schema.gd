@@ -108,7 +108,10 @@ static func serialize(
 			"carried_resource": str(c.carried_resource),
 			"carried_amount": c.carried_amount,
 			"active_job_id": c.active_job_id,
-			"current_block_reason": str(c.current_block_reason)
+			"current_block_reason": str(c.current_block_reason),
+			"energy": c.energy,
+			"is_resting": c.is_resting,
+			"skills": c.skills.duplicate()
 		}
 		data["citizens"].append(c_dict)
 		
@@ -276,6 +279,16 @@ static func deserialize(data: Dictionary) -> Dictionary:
 		c.carried_amount = c_dict.get("carried_amount", 0)
 		c.active_job_id = c_dict.get("active_job_id", 0)
 		c.current_block_reason = StringName(c_dict.get("current_block_reason", ""))
+		c.energy = clampf(float(c_dict.get("energy", CitizenState.MAX_ENERGY)), CitizenState.MIN_ENERGY, CitizenState.MAX_ENERGY)
+		c.is_resting = bool(c_dict.get("is_resting", false))
+		var saved_skills: Dictionary = c_dict.get("skills", {})
+		if not saved_skills.is_empty():
+			for s_name in CitizenState.SKILL_NAMES:
+				var str_key: String = str(s_name)
+				var val = saved_skills.get(str_key, saved_skills.get(s_name, CitizenState.DEFAULT_SKILL))
+				c.set_skill(s_name, float(val))
+		else:
+			c.init_starting_skills(c.id)
 		citizens_arr.append(c)
 	result["citizens"] = citizens_arr
 	

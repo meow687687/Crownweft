@@ -46,6 +46,7 @@ var panel_inspector: PanelContainer = null
 var label_inspector_title: Label = null
 var label_inspector_status: Label = null
 var progress_inspector: ProgressBar = null
+var box_workers: HBoxContainer = null
 var label_inspector_workers: Label = null
 var progress_capacity: ProgressBar = null
 var label_inspector_inv: Label = null
@@ -243,25 +244,25 @@ func _build_ui_layout() -> void:
 	progress_inspector.show_percentage = false
 	progress_inspector.visible = false
 	insp_box.add_child(progress_inspector)
-	var worker_box := HBoxContainer.new()
-	worker_box.add_theme_constant_override("separation", 8)
-	insp_box.add_child(worker_box)
+	box_workers = HBoxContainer.new()
+	box_workers.add_theme_constant_override("separation", 8)
+	insp_box.add_child(box_workers)
 	label_inspector_workers = Label.new()
 	label_inspector_workers.text = "Workers: 0 / 0"
 	label_inspector_workers.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	worker_box.add_child(label_inspector_workers)
+	box_workers.add_child(label_inspector_workers)
 	var btn_w_minus := Button.new()
 	btn_w_minus.text = "-"
 	btn_w_minus.custom_minimum_size = Vector2(30, 26)
 	UITheme.apply_button_style(btn_w_minus)
 	btn_w_minus.pressed.connect(func(): worker_assignment_changed.emit(-1))
-	worker_box.add_child(btn_w_minus)
+	box_workers.add_child(btn_w_minus)
 	var btn_w_plus := Button.new()
 	btn_w_plus.text = "+"
 	btn_w_plus.custom_minimum_size = Vector2(30, 26)
 	UITheme.apply_button_style(btn_w_plus)
 	btn_w_plus.pressed.connect(func(): worker_assignment_changed.emit(1))
-	worker_box.add_child(btn_w_plus)
+	box_workers.add_child(btn_w_plus)
 	insp_box.add_child(HSeparator.new())
 	label_inspector_inv = Label.new()
 	label_inspector_inv.text = "STOCKPILE"
@@ -399,6 +400,8 @@ func show_building_details(building: BuildingState, def_info: Dictionary, worker
 		return
 		
 	panel_inspector.visible = true
+	if box_workers != null:
+		box_workers.visible = true
 	
 	if building.is_under_construction():
 		label_inspector_title.text = "%s (Construction Site)  |  HP %d/%d" % [
@@ -527,3 +530,103 @@ func show_building_details(building: BuildingState, def_info: Dictionary, worker
 	
 	if box_recruitment != null:
 		box_recruitment.visible = (building.definition_id == &"barracks")
+
+func show_citizen_details(citizen: CitizenState, workplace: BuildingState = null, home: BuildingState = null) -> void:
+	if citizen == null:
+		panel_inspector.visible = false
+		return
+
+	panel_inspector.visible = true
+	if box_workers != null:
+		box_workers.visible = false
+	if box_recruitment != null:
+		box_recruitment.visible = false
+
+	label_inspector_title.text = "CITIZEN #%d — %s" % [citizen.id, str(citizen.role_id).capitalize()]
+
+	# Activity / Status explanation
+	if citizen.is_resting:
+		label_inspector_status.text = "STATUS: RESTING — Energy %d/100" % int(citizen.energy)
+		label_inspector_status.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
+	elif citizen.current_block_reason == &"Cannot rest — no valid home assigned":
+		label_inspector_status.text = "STATUS: EXHAUSTED — Cannot rest (no valid home assigned)"
+		label_inspector_status.add_theme_color_override("font_color", UITheme.COLOR_RED_ALERT)
+	elif citizen.current_block_reason == &"ENTRANCE_UNREACHABLE":
+		label_inspector_status.text = "STATUS: BLOCKED — Workplace entrance unreachable"
+		label_inspector_status.add_theme_color_override("font_color", UITheme.COLOR_RED_ALERT)
+	elif citizen.role_id == &"hauler":
+		if citizen.carried_amount > 0:
+			label_inspector_status.text = "STATUS: HAULING — %d %s (Hauling %d)" % [
+				citizen.carried_amount, str(citizen.carried_resource).capitalize(), int(citizen.get_skill(&"hauling"))
+			]
+		else:
+			label_inspector_status.text = "STATUS: HAULER IDLE — (Hauling %d)" % int(citizen.get_skill(&"hauling"))
+		label_inspector_status.add_theme_color_override("font_color", Color.WHITE)
+	elif citizen.workplace_id > 0 and workplace != null:
+		var act_name: String = "Working"
+		var skill_name: StringName = ProductionSystem.get_relevant_skill(workplace.definition_id)
+		if workplace.is_under_construction():
+			act_name = "Constructing"
+			skill_name = &"masonry"
+		elif workplace.definition_id == &"farm":
+			act_name = "Farming"
+		elif workplace.definition_id == &"woodcutter":
+			act_name = "Harvesting"
+		elif workplace.definition_id == &"bakery":
+			act_name = "Baking"
+		elif workplace.definition_id == &"quarry":
+			act_name = "Quarrying"
+
+		var skill_val: int = int(citizen.get_skill(skill_name)) if skill_name != &"" else 50
+		var skill_factor: float = citizen.get_skill_factor(skill_name) if skill_name != &"" else 1.0
+
+		if citizen.move_state == CitizenState.MoveState.MOVING:
+			label_inspector_status.text = "STATUS: TRAVELING TO WORKPLACE"
+			label_inspector_status.add_theme_color_override("font_color", Color.LIGHT_GRAY)
+		elif workplace.current_block_reason != &"":
+			label_inspector_status.text = "STATUS: WAITING — %s" % str(workplace.current_block_reason).replace("_", " ").capitalize()
+			label_inspector_status.add_theme_color_override("font_color", Color.ORANGE)
+		elif workplace.is_under_construction() and workplace.construction_block_reason != &"":
+			label_inspector_status.text = "STATUS: WAITING — %s" % str(workplace.construction_block_reason).replace("_", " ").capitalize()
+			label_inspector_status.add_theme_color_override("font_color", Color.ORANGE)
+		else:
+			label_inspector_status.text = "STATUS: %s — %s %d (x%.2f)" % [
+				act_name, str(skill_name).capitalize(), skill_val, skill_factor
+			]
+			label_inspector_status.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
+	else:
+		label_inspector_status.text = "STATUS: IDLE — Unassigned"
+		label_inspector_status.add_theme_color_override("font_color", Color.LIGHT_GRAY)
+
+	# Energy bar
+	progress_inspector.visible = true
+	progress_inspector.max_value = 100
+	progress_inspector.value = int(citizen.energy)
+
+	# Details text
+	var wp_name: String = "None"
+	if workplace != null:
+		var wp_def: Dictionary = BuildingCatalog.get_all_defs().get(workplace.definition_id, {})
+		wp_name = "%s (#%d)" % [wp_def.get("display_name", str(workplace.definition_id)), workplace.entity_id]
+	var hm_name: String = "None (Homeless)"
+	if home != null:
+		var hm_def: Dictionary = BuildingCatalog.get_all_defs().get(home.definition_id, {})
+		hm_name = "%s (#%d)" % [hm_def.get("display_name", str(home.definition_id)), home.entity_id]
+
+	var food_str: String = "Fed"
+	if citizen.food_state == CitizenState.FoodState.HUNGRY:
+		food_str = "Hungry"
+	elif citizen.food_state == CitizenState.FoodState.AT_RISK:
+		food_str = "Starving / At Risk"
+
+	var text: String = "ENERGY: %d / 100\n" % int(citizen.energy)
+	text += "WORKPLACE: %s\n" % wp_name
+	text += "HOME: %s\n" % hm_name
+	text += "FOOD: %s\n\n" % food_str
+	text += "SKILLS:\n"
+	for s: StringName in CitizenState.SKILL_NAMES:
+		var s_val: int = int(citizen.get_skill(s))
+		var s_fac: float = citizen.get_skill_factor(s)
+		text += " • %s: %d (x%.2f)\n" % [str(s).capitalize().rpad(10), s_val, s_fac]
+
+	label_inspector_inv.text = text

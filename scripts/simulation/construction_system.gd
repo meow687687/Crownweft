@@ -32,7 +32,12 @@ func create_construction_site(
 	b.construction_inventory = Inventory.new(construction_inv_id, inv_cap, cost.keys())
 	return b
 
-func tick_building(building: BuildingState, workers_present: int, current_tick: int) -> void:
+func tick_building(
+	building: BuildingState,
+	workers_present: int,
+	current_tick: int,
+	builders: Array[CitizenState] = []
+) -> void:
 	if building == null or building.is_destroyed:
 		return
 	if building.status == BuildingState.Status.ACTIVE:
@@ -50,7 +55,11 @@ func tick_building(building: BuildingState, workers_present: int, current_tick: 
 	# 2. Materials are present: site is actively ready for construction labor
 	building.status = BuildingState.Status.UNDER_CONSTRUCTION
 	
-	if workers_present <= 0:
+	var effective_workers: int = workers_present
+	if not builders.is_empty():
+		effective_workers = builders.size()
+
+	if effective_workers <= 0:
 		if building.construction_block_reason != &"ENTRANCE_UNREACHABLE":
 			building.construction_block_reason = &"NO_BUILDERS"
 		construction_blocked.emit(building, building.construction_block_reason)
@@ -59,8 +68,19 @@ func tick_building(building: BuildingState, workers_present: int, current_tick: 
 	building.construction_block_reason = &""
 	
 	# 3. Advance construction progress through explicit simulation ticks
-	var labor_advance: int = mini(workers_present, 4)
-	building.construction_ticks += labor_advance
+	var labor_advance: float = float(mini(effective_workers, 4))
+	if not builders.is_empty():
+		labor_advance = 0.0
+		for b: CitizenState in builders:
+			b.consume_energy(CitizenState.WORK_ENERGY_DRAIN)
+			b.gain_experience(&"masonry", 0.1)
+			labor_advance += b.get_skill_factor(&"masonry")
+		labor_advance = minf(labor_advance, 5.0)
+
+	building.construction_labor_accum += labor_advance
+	var steps: int = int(building.construction_labor_accum)
+	building.construction_labor_accum -= float(steps)
+	building.construction_ticks += steps
 	building.construction_progress = clampf(
 		float(building.construction_ticks) / float(maxi(1, building.construction_required_ticks)),
 		0.0,

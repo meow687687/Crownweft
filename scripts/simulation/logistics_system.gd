@@ -16,6 +16,7 @@ class Hauler:
 	var path_target_inventory_id: int = -1
 	var next_path_retry_tick: int = 0
 	var last_block_reason: String = ""
+	var step_accum: float = 0.0
 
 	func _init(p_id: int, p_tile: Vector2i = Vector2i.ZERO) -> void:
 		id = p_id
@@ -25,6 +26,7 @@ class Hauler:
 		path.clear()
 		path_index = 0
 		path_target_inventory_id = -1
+		step_accum = 0.0
 
 
 var haulers: Array[Hauler] = []
@@ -58,7 +60,7 @@ func check_and_create_demand(
 		return null
 	return job_board.create_job(resource_id, transfer_amount, source_inv, dest_inv, priority, current_tick)
 
-func dispatch_jobs() -> void:
+func dispatch_jobs(citizens_by_id: Dictionary = {}) -> void:
 	var pending: Array[HaulJob] = job_board.get_pending_jobs()
 	pending.sort_custom(func(a: HaulJob, b: HaulJob) -> bool:
 		if a.priority == b.priority:
@@ -67,6 +69,9 @@ func dispatch_jobs() -> void:
 	)
 	for job: HaulJob in pending:
 		for hauler: Hauler in haulers:
+			var c: CitizenState = citizens_by_id.get(hauler.id, null)
+			if c != null and c.is_resting:
+				continue
 			if hauler.active_job == null and not hauler.is_route_blocked:
 				if job_board.assign_job(job, hauler.id):
 					hauler.active_job = job
@@ -80,7 +85,8 @@ func tick_haulers(
 	inventories_by_id: Dictionary,
 	current_tick: int,
 	pathfinding: PathfindingService = null,
-	buildings_by_inventory: Dictionary = {}
+	buildings_by_inventory: Dictionary = {},
+	citizens_by_id: Dictionary = {}
 ) -> void:
 	for hauler: Hauler in haulers:
 		var job: HaulJob = hauler.active_job
@@ -180,8 +186,14 @@ func tick_haulers(
 
 		# Ensure a rerouted destination lookup is fresh in this tick.
 		dest_inv = inventories_by_id.get(job.destination_inventory_id, dest_inv)
-		var arrived: bool = _advance_toward(hauler, target_building, target_inventory_id, pathfinding, current_tick)
+		var citizen: CitizenState = citizens_by_id.get(hauler.id, null)
+		var haul_factor: float = citizen.get_skill_factor(&"hauling") if citizen != null else 1.0
+
+		var arrived: bool = _advance_toward(hauler, target_building, target_inventory_id, pathfinding, current_tick, haul_factor)
 		if not arrived:
+			if citizen != null and hauler.carried_amount > 0:
+				citizen.consume_energy(CitizenState.WORK_ENERGY_DRAIN * (1.0 / haul_factor))
+				citizen.gain_experience(&"hauling", 0.05)
 			continue
 
 		if job.status == HaulJob.Status.ASSIGNED or job.status == HaulJob.Status.RESERVED:
@@ -191,6 +203,8 @@ func tick_haulers(
 				hauler.clear_path()
 				hauler.last_block_reason = ""
 				job.blocked_reason = ""
+				if citizen != null:
+					citizen.consume_energy(CitizenState.WORK_ENERGY_DRAIN * 0.5)
 			else:
 				job_board.cancel_job(job, source_inv, dest_inv, "PICKUP_FAILED")
 				hauler.active_job = null
@@ -204,6 +218,11 @@ func tick_haulers(
 				hauler.active_job = null
 				hauler.clear_path()
 				hauler.last_block_reason = ""
+				if citizen != null:
+					citizen.consume_energy(CitizenState.WORK_ENERGY_DRAIN * 0.5)
+					citizen.gain_experience(&"hauling", 0.5)
+					if citizen.is_exhausted():
+						citizen.is_resting = true
 			else:
 				job.blocked_reason = "DELIVERY_BLOCKED — cargo retained"
 				hauler.last_block_reason = "DELIVERY_BLOCKED"
@@ -243,7 +262,8 @@ func _advance_toward(
 	target_building: BuildingState,
 	target_inventory_id: int,
 	pathfinding: PathfindingService,
-	current_tick: int
+	current_tick: int,
+	haul_factor: float = 1.0
 ) -> bool:
 	var needs_new_path: bool = hauler.path_target_inventory_id != target_inventory_id
 	if not needs_new_path and not hauler.path.is_empty() and hauler.path_index < hauler.path.size():
@@ -280,16 +300,24 @@ func _advance_toward(
 	if hauler.path_index >= hauler.path.size():
 		return not hauler.path.is_empty()
 
-	var next_tile: Vector2i = hauler.path[hauler.path_index]
-	if pathfinding.astar_grid.is_point_solid(next_tile):
-		hauler.clear_path()
-		hauler.next_path_retry_tick = current_tick + PATH_RETRY_TICKS
-		hauler.last_block_reason = "PATH_CHANGED"
-		hauler.active_job.blocked_reason = "PATH_CHANGED"
-		return false
+	hauler.step_accum += haul_factor
+	var steps_to_take: int = int(hauler.step_accum)
+	hauler.step_accum -= float(steps_to_take)
 
-	hauler.current_tile = next_tile
-	hauler.path_index += 1
+	for _i in range(steps_to_take):
+		if hauler.path_index >= hauler.path.size():
+			break
+		var next_tile: Vector2i = hauler.path[hauler.path_index]
+		if pathfinding.astar_grid.is_point_solid(next_tile):
+			hauler.clear_path()
+			hauler.next_path_retry_tick = current_tick + PATH_RETRY_TICKS
+			hauler.last_block_reason = "PATH_CHANGED"
+			hauler.active_job.blocked_reason = "PATH_CHANGED"
+			return false
+
+		hauler.current_tile = next_tile
+		hauler.path_index += 1
+
 	return hauler.path_index >= hauler.path.size()
 
 func get_hauler_by_id(hauler_id: int) -> Hauler:

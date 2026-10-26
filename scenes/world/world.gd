@@ -33,6 +33,7 @@ var current_tick: int = 0
 # Placement / Selection state
 var active_build_id: StringName = &""
 var selected_building: BuildingState = null
+var selected_citizen: CitizenState = null
 
 func _ready() -> void:
 	_init_simulation()
@@ -261,18 +262,29 @@ func _unhandled_input(event: InputEvent) -> void:
 						var defs = BuildingCatalog.get_all_defs()
 						ui.show_toast("Constructed %s" % defs.get(active_build_id, {}).get("display_name", "Building"), false)
 			else:
-				var clicked_unit: MilitaryUnitState = _find_unit_at(mouse_world)
-				if clicked_unit != null and clicked_unit.faction_id == 0:
-					selected_units = [clicked_unit]
-					renderer.selected_units = selected_units
+				var clicked_citizen: CitizenState = _find_citizen_at(mouse_world)
+				if clicked_citizen != null:
+					selected_citizen = clicked_citizen
 					selected_building = null
+					selected_units.clear()
 					renderer.selected_building = null
-					ui.show_building_details(null, {})
+					renderer.selected_units = selected_units
+					_update_citizen_inspector()
 					renderer.queue_redraw()
 				else:
-					selected_units.clear()
-					renderer.selected_units = selected_units
-					_select_building_at(tile_coord)
+					selected_citizen = null
+					var clicked_unit: MilitaryUnitState = _find_unit_at(mouse_world)
+					if clicked_unit != null and clicked_unit.faction_id == 0:
+						selected_units = [clicked_unit]
+						renderer.selected_units = selected_units
+						selected_building = null
+						renderer.selected_building = null
+						ui.show_building_details(null, {})
+						renderer.queue_redraw()
+					else:
+						selected_units.clear()
+						renderer.selected_units = selected_units
+						_select_building_at(tile_coord)
 					
 		elif mb.button_index == MOUSE_BUTTON_RIGHT:
 			if active_build_id != &"":
@@ -294,9 +306,24 @@ func _unhandled_input(event: InputEvent) -> void:
 				renderer.queue_redraw()
 			else:
 				selected_building = null
+				selected_citizen = null
 				renderer.selected_building = null
 				ui.show_building_details(null, {})
 				renderer.queue_redraw()
+
+func _find_citizen_at(pos: Vector2) -> CitizenState:
+	for c: CitizenState in citizens:
+		var c_world := Vector2(c.position_tile.x * 16.0 + 8.0, c.position_tile.y * 16.0 + 8.0)
+		if c_world.distance_to(pos) <= 12.0:
+			return c
+	return null
+
+func _update_citizen_inspector() -> void:
+	if selected_citizen == null or ui == null:
+		return
+	var wp: BuildingState = _find_building_by_entity_id(selected_citizen.workplace_id)
+	var hm: BuildingState = _find_building_by_entity_id(selected_citizen.home_building_id)
+	ui.show_citizen_details(selected_citizen, wp, hm)
 
 func _find_unit_at(pos: Vector2) -> MilitaryUnitState:
 	for u in military_units:
@@ -351,6 +378,7 @@ func _worker_role_for_building(building_id: StringName) -> StringName:
 
 func _select_building_at(tile_coord: Vector2i) -> void:
 	selected_building = null
+	selected_citizen = null
 	var defs: Dictionary = BuildingCatalog.get_all_defs()
 	for b in buildings:
 		var footprint: Vector2i = defs.get(b.definition_id, {}).get("footprint", Vector2i(2, 2))
@@ -705,18 +733,22 @@ func _simulation_tick() -> void:
 					if building.assigned_workers >= 2:
 						break
 
+	# Update housing assignments, resting, and energy recovery
+	_update_housing_and_rest()
+
 	# Assigned workers must physically reach their worksite before production/construction can advance.
 	_update_worker_movement()
 
 	# 1. Production and Construction.
 	for building: BuildingState in buildings:
 		if building.is_under_construction():
-			var workers_present: int = _count_workers_at_building(building)
-			construction.tick_building(building, workers_present, current_tick)
+			var present_builders: Array[CitizenState] = _get_workers_present_at_building(building)
+			construction.tick_building(building, present_builders.size(), current_tick, present_builders)
 		elif building.status == BuildingState.Status.ACTIVE:
 			var recipe: RecipeDef = defs.get(building.definition_id, {}).get("recipe", null)
 			if recipe != null:
-				production.tick_building(building, recipe, world_state, _count_workers_at_building(building))
+				var present_workers: Array[CitizenState] = _get_workers_present_at_building(building)
+				production.tick_building(building, recipe, world_state, present_workers.size(), present_workers)
 
 	# 2. Needs are supplied only by inventories the citizen can physically reach.
 	var food_inventories: Array[Inventory] = []
@@ -745,9 +777,13 @@ func _simulation_tick() -> void:
 	)
 
 	# 4. Create demands, assign jobs, and physically move haulers along A* paths.
+	var citizens_by_id: Dictionary = {}
+	for c: CitizenState in citizens:
+		citizens_by_id[c.id] = c
+
 	_generate_logistics_demand()
-	logistics.dispatch_jobs()
-	logistics.tick_haulers(inv_map, current_tick, pathfinding, building_by_inv)
+	logistics.dispatch_jobs(citizens_by_id)
+	logistics.tick_haulers(inv_map, current_tick, pathfinding, building_by_inv, citizens_by_id)
 	_update_citizen_hauling_movement()
 
 	# 5. Keep the route overlay connected to live jobs.
@@ -756,6 +792,8 @@ func _simulation_tick() -> void:
 		if job.status != HaulJob.Status.DELIVERED and job.status != HaulJob.Status.CANCELLED:
 			renderer.active_jobs.append(job)
 	_update_ui_state(needs_report)
+	if selected_citizen != null:
+		_update_citizen_inspector()
 	renderer.queue_redraw()
 
 func _update_worker_movement() -> void:
@@ -765,7 +803,7 @@ func _update_worker_movement() -> void:
 	# Pre-collect occupied staging tiles of idle workers at their workplace
 	var occupied_by_building: Dictionary = {}
 	for citizen: CitizenState in citizens:
-		if citizen.role_id == &"hauler" or citizen.workplace_id <= 0:
+		if citizen.role_id == &"hauler" or citizen.workplace_id <= 0 or citizen.is_resting:
 			continue
 		if citizen.move_state == CitizenState.MoveState.IDLE:
 			var b_id: int = citizen.workplace_id
@@ -775,6 +813,8 @@ func _update_worker_movement() -> void:
 
 	for citizen: CitizenState in citizens:
 		if citizen.role_id == &"hauler":
+			continue
+		if citizen.is_resting:
 			continue
 		if citizen.workplace_id <= 0:
 			citizen.path.clear()
@@ -848,16 +888,128 @@ func _update_worker_movement() -> void:
 			if citizen.path.is_empty():
 				citizen.target_tile = citizen.position_tile
 
-func _count_workers_at_building(building: BuildingState) -> int:
+func _get_workers_present_at_building(building: BuildingState) -> Array[CitizenState]:
 	var defs: Dictionary = BuildingCatalog.get_all_defs()
 	var footprint: Vector2i = defs.get(building.definition_id, {}).get("footprint", Vector2i.ONE)
-	var count: int = 0
+	var list: Array[CitizenState] = []
 	for citizen: CitizenState in citizens:
 		if citizen.workplace_id != building.entity_id or citizen.role_id == &"hauler":
 			continue
-		if citizen.move_state == CitizenState.MoveState.IDLE and _is_adjacent_to_building(citizen.position_tile, building, footprint):
-			count += 1
-	return count
+		if not citizen.is_resting and citizen.move_state == CitizenState.MoveState.IDLE and _is_adjacent_to_building(citizen.position_tile, building, footprint):
+			list.append(citizen)
+	return list
+
+func _count_workers_at_building(building: BuildingState) -> int:
+	return _get_workers_present_at_building(building).size()
+
+func _update_housing_and_rest() -> void:
+	var defs: Dictionary = BuildingCatalog.get_all_defs()
+	var house_occupants: Dictionary = {} # int -> int
+	var available_houses: Array[BuildingState] = []
+	for b: BuildingState in buildings:
+		if b.status == BuildingState.Status.ACTIVE:
+			var cap: int = int(defs.get(b.definition_id, {}).get("housing_capacity", 0))
+			if cap > 0:
+				house_occupants[b.entity_id] = 0
+				available_houses.append(b)
+
+	# Tally existing occupants
+	for c: CitizenState in citizens:
+		if c.home_building_id > 0:
+			if house_occupants.has(c.home_building_id):
+				house_occupants[c.home_building_id] += 1
+			else:
+				c.home_building_id = 0
+
+	# Assign homeless citizens to houses with free capacity
+	for c: CitizenState in citizens:
+		if c.home_building_id <= 0:
+			for h: BuildingState in available_houses:
+				var cap: int = int(defs.get(h.definition_id, {}).get("housing_capacity", 0))
+				if house_occupants.get(h.entity_id, 0) < cap:
+					c.home_building_id = h.entity_id
+					house_occupants[h.entity_id] = house_occupants.get(h.entity_id, 0) + 1
+					break
+
+	# Process energy and rest state
+	for c: CitizenState in citizens:
+		if not c.is_resting:
+			if c.is_exhausted():
+				if c.role_id == &"hauler" and c.carried_amount > 0:
+					pass
+				else:
+					c.is_resting = true
+					c.path.clear()
+					c.move_state = CitizenState.MoveState.IDLE
+			elif c.move_state == CitizenState.MoveState.IDLE and c.workplace_id <= 0:
+				c.consume_energy(CitizenState.IDLE_ENERGY_DRAIN)
+
+		if c.is_resting:
+			var home: BuildingState = _find_building_by_entity_id(c.home_building_id)
+			if home == null or home.is_destroyed or home.status != BuildingState.Status.ACTIVE:
+				c.home_building_id = 0
+				# Attempt to find another house
+				for h: BuildingState in available_houses:
+					var cap: int = int(defs.get(h.definition_id, {}).get("housing_capacity", 0))
+					if house_occupants.get(h.entity_id, 0) < cap:
+						c.home_building_id = h.entity_id
+						house_occupants[h.entity_id] = house_occupants.get(h.entity_id, 0) + 1
+						home = h
+						break
+
+			if home == null:
+				c.current_block_reason = &"Cannot rest — no valid home assigned"
+				c.move_state = CitizenState.MoveState.IDLE
+				c.path.clear()
+				c.target_tile = c.position_tile
+				continue
+
+			var home_footprint: Vector2i = defs.get(home.definition_id, {}).get("footprint", Vector2i.ONE)
+			if _is_adjacent_to_building(c.position_tile, home, home_footprint):
+				c.move_state = CitizenState.MoveState.IDLE
+				c.path.clear()
+				c.target_tile = c.position_tile
+				c.current_block_reason = &""
+				c.restore_energy(CitizenState.REST_ENERGY_RECOVERY)
+				if c.is_recovered():
+					c.is_resting = false
+					c.path.clear()
+					c.move_state = CitizenState.MoveState.IDLE
+			else:
+				_route_citizen_to_home(c, home)
+
+func _route_citizen_to_home(citizen: CitizenState, home: BuildingState) -> void:
+	if not citizen.path.is_empty():
+		if pathfinding.astar_grid.is_point_solid(citizen.path[0]) or pathfinding.astar_grid.is_point_solid(citizen.target_tile):
+			citizen.path.clear()
+
+	if citizen.path.is_empty():
+		var route_res: Dictionary = pathfinding.find_path_to_entrance(
+			citizen.position_tile, home
+		)
+		if not route_res.get("ok", false):
+			citizen.move_state = CitizenState.MoveState.IDLE
+			citizen.target_tile = citizen.position_tile
+			citizen.current_block_reason = &"Cannot rest — route to home blocked"
+			return
+
+		citizen.current_block_reason = &""
+		var route: Array[Vector2i] = []
+		route.assign(route_res.get("path", []))
+		citizen.path = route
+		citizen.target_tile = route_res.get("target_tile", route[route.size() - 1] if not route.is_empty() else citizen.position_tile)
+		if not citizen.path.is_empty():
+			citizen.path.remove_at(0)
+		if citizen.path.is_empty():
+			citizen.move_state = CitizenState.MoveState.IDLE
+			citizen.target_tile = citizen.position_tile
+			return
+
+	if not citizen.path.is_empty():
+		citizen.position_tile = citizen.path.pop_front()
+		citizen.move_state = CitizenState.MoveState.MOVING if not citizen.path.is_empty() else CitizenState.MoveState.IDLE
+		if citizen.path.is_empty():
+			citizen.target_tile = citizen.position_tile
 
 func _is_adjacent_to_building(tile_coord: Vector2i, building: BuildingState, footprint: Vector2i) -> bool:
 	if building != null and building.entrance_offset != Vector2i.ZERO:
