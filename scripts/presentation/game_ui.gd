@@ -18,6 +18,8 @@ signal toggle_government_panel_requested()
 signal policy_enact_requested(law_id: StringName, option_id: StringName)
 signal toggle_diplomacy_panel_requested()
 signal proposal_response_requested(proposal_id: int, accept: bool)
+signal ceasefire_requested(war_id: int)
+signal peace_requested(war_id: int)
 
 # Top Bar Elements
 var label_coin: Label = null
@@ -1518,7 +1520,112 @@ func _refresh_diplomacy_panel() -> void:
 
 		box_diplomacy_details.add_child(HSeparator.new())
 
-		# 4. Pending Proposals Card
+		# 4. Active Wars & Conflict Status
+		var war_card := VBoxContainer.new()
+		war_card.add_theme_constant_override("separation", 6)
+		box_diplomacy_details.add_child(war_card)
+
+		var war_header := Label.new()
+		war_header.text = "MILITARY CONFLICT & WAR STATUS"
+		war_header.add_theme_font_size_override("font_size", 11)
+		war_header.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+		war_card.add_child(war_header)
+
+		var active_wars: Array = _last_diplomacy_data.get("active_wars", [])
+		var relevant_war: Dictionary = {}
+		for w in active_wars:
+			var init_f: StringName = StringName(w.get("initiating_faction", ""))
+			var targ_f: StringName = StringName(w.get("target_faction", ""))
+			if (init_f == selected_diplomacy_faction_id and targ_f == FactionCatalog.FACTION_PLAYER) or (init_f == FactionCatalog.FACTION_PLAYER and targ_f == selected_diplomacy_faction_id):
+				relevant_war = w
+				break
+
+		if relevant_war.is_empty():
+			var no_war_lbl := Label.new()
+			no_war_lbl.text = "State of Peace. No active military conflict with this realm."
+			no_war_lbl.add_theme_font_size_override("font_size", 10)
+			no_war_lbl.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
+			war_card.add_child(no_war_lbl)
+		else:
+			var w_panel := PanelContainer.new()
+			var w_status: String = str(relevant_war.get("status", "peace"))
+			var border_col: Color = UITheme.COLOR_RED_ALERT if w_status == "war" else Color("#feca57")
+			w_panel.add_theme_stylebox_override("panel", UITheme.create_panel_style(Color(0.2, 0.15, 0.18), border_col, 1, 4))
+			war_card.add_child(w_panel)
+
+			var w_vbox := VBoxContainer.new()
+			w_vbox.add_theme_constant_override("separation", 4)
+			w_panel.add_child(w_vbox)
+
+			var status_str: String = "STATUS: %s" % w_status.to_upper()
+			if w_status == "ceasefire":
+				status_str += " (Truce: %d ticks left)" % int(relevant_war.get("ceasefire_ticks_remaining", 0))
+			var w_status_lbl := Label.new()
+			w_status_lbl.text = status_str
+			w_status_lbl.add_theme_font_size_override("font_size", 11)
+			w_status_lbl.add_theme_color_override("font_color", border_col)
+			w_vbox.add_child(w_status_lbl)
+
+			var w_reason := Label.new()
+			w_reason.text = "Cause: %s" % str(relevant_war.get("reason", "Border tensions"))
+			w_reason.add_theme_font_size_override("font_size", 10)
+			w_reason.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			w_vbox.add_child(w_reason)
+
+			var cas_dict: Dictionary = relevant_war.get("casualties", {})
+			var crown_cas: int = int(cas_dict.get(str(FactionCatalog.FACTION_PLAYER), 0))
+			var enemy_cas: int = int(cas_dict.get(str(selected_diplomacy_faction_id), 0))
+			var w_cas_lbl := Label.new()
+			w_cas_lbl.text = "Casualties: Crown %d  |  Enemy %d" % [crown_cas, enemy_cas]
+			w_cas_lbl.add_theme_font_size_override("font_size", 10)
+			w_cas_lbl.add_theme_color_override("font_color", Color("#c8d6e5"))
+			w_vbox.add_child(w_cas_lbl)
+
+			var battles: Array = relevant_war.get("battles", [])
+			if not battles.is_empty():
+				var b_header := Label.new()
+				b_header.text = "Recorded Engagements:"
+				b_header.add_theme_font_size_override("font_size", 9)
+				b_header.add_theme_color_override("font_color", UITheme.COLOR_TEXT_MUTED)
+				w_vbox.add_child(b_header)
+				for b in battles:
+					var b_lbl := Label.new()
+					b_lbl.text = "  • Tick %d: %s (Result: %s)" % [
+						int(b.get("tick", 0)),
+						str(b.get("description", "")),
+						str(b.get("result", "")).capitalize()
+					]
+					b_lbl.add_theme_font_size_override("font_size", 9)
+					w_vbox.add_child(b_lbl)
+
+			# Negotiation buttons
+			var war_id: int = int(relevant_war.get("id", 0))
+			var war_btn_box := HBoxContainer.new()
+			war_btn_box.add_theme_constant_override("separation", 10)
+			w_vbox.add_child(war_btn_box)
+
+			if w_status == "war":
+				var btn_truce := Button.new()
+				btn_truce.text = "Negotiate Ceasefire (Truce)"
+				btn_truce.custom_minimum_size = Vector2(160, 24)
+				btn_truce.add_theme_font_size_override("font_size", 10)
+				UITheme.apply_button_style(btn_truce)
+				btn_truce.add_theme_color_override("font_color", Color("#feca57"))
+				btn_truce.pressed.connect(func(): ceasefire_requested.emit(war_id))
+				war_btn_box.add_child(btn_truce)
+
+			var btn_peace := Button.new()
+			btn_peace.text = "Conclude Peace Treaty"
+			btn_peace.custom_minimum_size = Vector2(150, 24)
+			btn_peace.add_theme_font_size_override("font_size", 10)
+			UITheme.apply_button_style(btn_peace)
+			btn_peace.add_theme_color_override("font_color", Color("#1dd1a1"))
+			btn_peace.pressed.connect(func(): peace_requested.emit(war_id))
+			war_btn_box.add_child(btn_peace)
+
+		box_diplomacy_details.add_child(HSeparator.new())
+
+		# 5. Pending Proposals Card
 		var prop_card := VBoxContainer.new()
 		prop_card.add_theme_constant_override("separation", 6)
 		box_diplomacy_details.add_child(prop_card)

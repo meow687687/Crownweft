@@ -141,6 +141,9 @@ func _setup_signals() -> void:
 	)
 	ui.toggle_diplomacy_panel_requested.connect(_on_toggle_diplomacy_panel)
 	ui.proposal_response_requested.connect(_on_proposal_response)
+	ui.ceasefire_requested.connect(_on_ceasefire_requested)
+	ui.peace_requested.connect(_on_peace_requested)
+	combat.unit_died.connect(_on_unit_died)
 	ui.save_game_requested.connect(_on_save_game)
 	ui.load_game_requested.connect(_on_load_game)
 
@@ -944,6 +947,7 @@ func _simulation_tick() -> void:
 
 	# Faction diplomacy decisions and relationship tracking
 	diplomacy_system.tick_diplomacy(diplomacy, current_tick, main_inv, economy, government)
+	_tick_active_wars()
 
 	# Periodic check for social status advancement
 	if current_tick % 20 == 0:
@@ -1433,13 +1437,103 @@ func _update_diplomacy_ui() -> void:
 		p_dict["title"] = p.get_title()
 		props_arr.append(p_dict)
 
+	var wars_arr: Array = []
+	for w in diplomacy.active_wars:
+		wars_arr.append(w.serialize())
+
 	var dip_payload: Dictionary = {
 		"factions": facs_data,
 		"relationships": rels_data,
 		"proposals": props_arr,
-		"chronicle": diplomacy.diplomatic_chronicle.duplicate(true)
+		"chronicle": diplomacy.diplomatic_chronicle.duplicate(true),
+		"active_wars": wars_arr,
+		"war_history": diplomacy.war_history.duplicate(true)
 	}
 	ui.update_diplomacy_panel(dip_payload)
+
+func _tick_active_wars() -> void:
+	if diplomacy == null:
+		return
+	for war in diplomacy.active_wars:
+		if war.status == WarState.STATUS_WAR and not war.attacker_expedition_spawned:
+			# Spawn border attack expedition
+			var camp_pos: Vector2 = Vector2(world_state.raider_camp_pos.x * 16.0, world_state.raider_camp_pos.y * 16.0)
+			for i in range(4):
+				var spawn_pos: Vector2 = camp_pos + Vector2((i % 2) * 16.0, (i / 2) * 16.0)
+				var unit: MilitaryUnitState = combat.spawn_raider_unit(spawn_pos)
+				unit.faction_id = FactionCatalog.get_numeric_faction_id(war.initiating_faction)
+				military_units.append(unit)
+				war.attacker_expedition_unit_ids.append(unit.id)
+			war.attacker_expedition_spawned = true
+			if ui != null:
+				ui.show_toast("INVASION FORCES ADVANCING: %s troops approaching border!" % [
+					diplomacy.factions.get(war.initiating_faction, FactionState.new()).display_name
+				], true)
+				_update_diplomacy_ui()
+		elif war.status in [WarState.STATUS_CEASEFIRE, WarState.STATUS_PEACE]:
+			# Clean surviving expedition units from map upon ceasefire/peace
+			for uid in war.attacker_expedition_unit_ids:
+				var u: MilitaryUnitState = combat._find_unit_by_id(military_units, uid)
+				if u != null and not u.is_dead:
+					u.is_dead = true
+
+func _on_unit_died(unit: MilitaryUnitState) -> void:
+	if diplomacy == null:
+		return
+	var dead_fac: StringName = FactionCatalog.get_faction_id_from_numeric(unit.faction_id)
+	for war in diplomacy.active_wars:
+		if war.initiating_faction == dead_fac or war.target_faction == dead_fac:
+			war.record_casualty(dead_fac)
+			# Check if all expedition attackers are defeated
+			if unit.id in war.attacker_expedition_unit_ids:
+				var all_repelled: bool = true
+				for uid in war.attacker_expedition_unit_ids:
+					var u: MilitaryUnitState = combat._find_unit_by_id(military_units, uid)
+					if u != null and not u.is_dead:
+						all_repelled = false
+						break
+				if all_repelled:
+					war.record_battle(
+						current_tick,
+						"Crown defenders repelled the border expedition",
+						int(war.casualties.get(str(war.initiating_faction), 0)),
+						int(war.casualties.get(str(war.target_faction), 0)),
+						&"repelled"
+					)
+					diplomacy.add_chronicle(
+						current_tick,
+						"BATTLE VICTORY: Crown defenders routed the hostile %s expedition!" % [
+							diplomacy.factions.get(war.initiating_faction, FactionState.new()).display_name
+						],
+						&"battle_victory"
+					)
+					if ui != null:
+						ui.show_toast("BATTLE WON: Enemy expedition repelled! Truce is now viable.", false)
+						_update_diplomacy_ui()
+
+func _on_ceasefire_requested(war_id: int) -> void:
+	if diplomacy == null or diplomacy_system == null:
+		return
+	var res: Dictionary = diplomacy_system.negotiate_ceasefire(diplomacy, war_id, current_tick)
+	if res.get("ok", false):
+		if ui != null:
+			ui.show_toast("Ceasefire negotiated. Hostilities paused for 240 ticks.", false)
+			_update_diplomacy_ui()
+	else:
+		if ui != null:
+			ui.show_toast(res.get("reason", "Cannot negotiate ceasefire"), true)
+
+func _on_peace_requested(war_id: int) -> void:
+	if diplomacy == null or diplomacy_system == null:
+		return
+	var res: Dictionary = diplomacy_system.conclude_peace_treaty(diplomacy, war_id, current_tick, WarState.OUTCOME_WHITE_PEACE)
+	if res.get("ok", false):
+		if ui != null:
+			ui.show_toast("Peace treaty concluded. Permanent peace restored.", false)
+			_update_diplomacy_ui()
+	else:
+		if ui != null:
+			ui.show_toast(res.get("reason", "Cannot conclude peace treaty"), true)
 
 func _on_save_game() -> void:
 	var success: bool = SaveService.save_game_to_file(

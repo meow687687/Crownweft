@@ -121,3 +121,29 @@ static func get_goal_display_name(goal_id: StringName) -> String:
 			return "Preserve Natural Resources"
 		_:
 			return str(goal_id).capitalize()
+
+static func get_numeric_faction_id(faction_id: StringName) -> int:
+	match faction_id:
+		FACTION_PLAYER:
+			return 0
+		FACTION_VALEN:
+			return 2
+		FACTION_OLD_GROVE:
+			return 3
+		FACTION_IRONPEAK:
+			return 4
+		_:
+			return 1
+
+static func get_faction_id_from_numeric(num_id: int) -> StringName:
+	match num_id:
+		0:
+			return FACTION_PLAYER
+		2:
+			return FACTION_VALEN
+		3:
+			return FACTION_OLD_GROVE
+		4:
+			return FACTION_IRONPEAK
+		_:
+			return &"raiders"

@@ -89,12 +89,14 @@ func tick_economy(
 			else:
 				policy_approval_mod += LawCatalog.get_policy_approval_mod(LawCatalog.LAW_FORESTRY, for_pol)
 
-		# Diplomatic treaties approval bonus
+		# Diplomatic treaties and active war approval impact
 		var diplomacy_approval_bonus: float = 0.0
 		if diplomacy != null:
 			var p_fac: FactionState = diplomacy.factions.get(FactionCatalog.FACTION_PLAYER, null)
 			if p_fac != null and p_fac.has_active_treaty(&"defensive_pact"):
 				diplomacy_approval_bonus += 4.0
+			if diplomacy.has_active_war(FactionCatalog.FACTION_PLAYER):
+				diplomacy_approval_bonus -= 8.0 # Military conflict anxiety and societal strain
 
 		var final_target: float = clampf(base_target - penalty + status_approval_bonus + admin_approval_dampening + policy_approval_mod + diplomacy_approval_bonus, 0.0, 100.0)
 		

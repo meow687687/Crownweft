@@ -11,6 +11,7 @@ const ACTION_TRADE_SELL: StringName = &"trade_sell"
 const ACTION_TRADE_BUY: StringName = &"trade_buy"
 const ACTION_REQUEST_AID: StringName = &"request_aid"
 const ACTION_PROPOSE_ALLIANCE: StringName = &"propose_alliance"
+const ACTION_ESCALATE_WAR: StringName = &"escalate_war"
 
 func tick_diplomacy(
 	diplomacy: DiplomacyState,
@@ -40,7 +41,10 @@ func tick_diplomacy(
 			valid_props.append(p)
 	diplomacy.pending_proposals = valid_props
 
-	# 2. Schedule AI decisions
+	# 2. Advance War Lifecycles
+	_advance_war_lifecycles(diplomacy, current_tick, player_inventory)
+
+	# 3. Schedule AI decisions
 	if current_tick % DECISION_INTERVAL_TICKS != 0:
 		return
 
@@ -115,9 +119,11 @@ func _generate_candidate_actions(
 		"description": "Maintain status quo and monitor borders."
 	})
 
+	var is_at_war: bool = diplomacy.has_active_war(faction.id, FactionCatalog.FACTION_PLAYER)
+
 	# 1. Aid Request candidate: if food is scarce and trust is not hostile
 	var food_amt: int = int(faction.resources.get(&"grain", 0))
-	if food_amt <= 20 and not faction.is_on_cooldown(&"aid", current_tick) and rel.resentment < 50.0:
+	if not is_at_war and food_amt <= 20 and not faction.is_on_cooldown(&"aid", current_tick) and rel.resentment < 50.0:
 		candidates.append({
 			"action_id": ACTION_REQUEST_AID,
 			"resource_id": &"grain",
@@ -126,7 +132,7 @@ func _generate_candidate_actions(
 			"description": "Appeal for 10 grain to replenish critically depleted granaries."
 		})
 
-	# 2. Trade Sell candidate: if faction has surplus resources
+	# 2. Trade Sell candidate: if faction has surplus resources and not at war
 	var surplus_res: StringName = &""
 	var surplus_amt: int = 0
 	for r_id in [&"timber", &"stone", &"grain"]:
@@ -135,7 +141,7 @@ func _generate_candidate_actions(
 			surplus_res = r_id
 			surplus_amt = 15
 			break
-	if surplus_res != &"" and not faction.is_on_cooldown(&"trade", current_tick):
+	if not is_at_war and surplus_res != &"" and not faction.is_on_cooldown(&"trade", current_tick):
 		var price: int = 15 if surplus_res != &"grain" else 20
 		candidates.append({
 			"action_id": ACTION_TRADE_SELL,
@@ -145,8 +151,8 @@ func _generate_candidate_actions(
 			"description": "Sell %d surplus %s for %d coins." % [surplus_amt, str(surplus_res).capitalize(), price]
 		})
 
-	# 3. Trade Buy candidate: if faction has treasury and wants mineral/timber/grain goods
-	if faction.treasury >= 30 and not faction.is_on_cooldown(&"trade", current_tick):
+	# 3. Trade Buy candidate: if faction has treasury and wants mineral/timber/grain goods and not at war
+	if not is_at_war and faction.treasury >= 30 and not faction.is_on_cooldown(&"trade", current_tick):
 		var deficit_res: StringName = &""
 		for r_id in [&"stone", &"timber", &"grain"]:
 			var amt: int = int(faction.resources.get(r_id, 0))
@@ -162,14 +168,24 @@ func _generate_candidate_actions(
 				"description": "Purchase 10 %s for 18 coins." % str(deficit_res).capitalize()
 			})
 
-	# 4. Alliance Proposal candidate: if mutual trust and respect are high
-	if rel.trust >= 25.0 and rel.resentment <= 15.0 and not faction.has_active_treaty(&"defensive_pact", FactionCatalog.FACTION_PLAYER):
+	# 4. Alliance Proposal candidate: if mutual trust and respect are high and not at war
+	if not is_at_war and rel.trust >= 25.0 and rel.resentment <= 15.0 and not faction.has_active_treaty(&"defensive_pact", FactionCatalog.FACTION_PLAYER):
 		if not faction.is_on_cooldown(&"alliance", current_tick):
 			candidates.append({
 				"action_id": ACTION_PROPOSE_ALLIANCE,
 				"duration_ticks": 600,
 				"description": "Propose a formal mutual defensive alliance pact."
 			})
+
+	# 5. Escalate Conflict / War candidate: if grievances, resentment, or border tensions are high
+	if not is_at_war and not faction.is_on_cooldown(&"war", current_tick):
+		if not faction.has_active_treaty(&"defensive_pact", FactionCatalog.FACTION_PLAYER):
+			if faction.military_power >= 20 and (rel.resentment >= 35.0 or (rel.threat >= 35.0 and rel.trust <= 0.0)):
+				candidates.append({
+					"action_id": ACTION_ESCALATE_WAR,
+					"reason": "%s mobilizes warriors over severe grievances and simmering border hostilities." % faction.display_name,
+					"description": "Declare war and mobilize border expedition force."
+				})
 
 	return candidates
 
@@ -254,6 +270,27 @@ func _calculate_utility(
 				doctrine_fit += 10.0
 			cost += 0.0
 			risk += (rel.threat * 0.2)
+			opp_cost += 10.0
+
+		ACTION_ESCALATE_WAR:
+			if faction.active_goals.has(FactionCatalog.GOAL_PROTECT_BORDERS):
+				goal_fit += 40.0
+			if faction.active_goals.has(FactionCatalog.GOAL_STRENGTHEN_RELATIONS):
+				goal_fit -= 35.0
+			benefit += 25.0 # Assert border security
+			rel_effect += (rel.resentment * 0.4) + (rel.threat * 0.2) - (rel.trust * 0.5)
+			if faction.doctrine == &"martial_tradition":
+				doctrine_fit += 30.0
+			elif faction.doctrine == &"sylvan_harmony":
+				doctrine_fit -= 35.0
+			elif faction.doctrine == &"communal_labor":
+				doctrine_fit -= 15.0
+			cost += 15.0
+			var p_fac: FactionState = diplomacy.factions.get(FactionCatalog.FACTION_PLAYER, null)
+			if p_fac != null and p_fac.has_active_treaty(&"defensive_pact"):
+				risk += 30.0 # Allied defensive deterrence
+			else:
+				risk += 5.0
 			opp_cost += 10.0
 
 	var total: float = goal_fit + benefit + rel_effect + doctrine_fit - cost - risk - opp_cost
@@ -343,6 +380,25 @@ func _dispatch_candidate_action(
 			]
 			prop.forecast = "Accepting seals a 600-tick alliance (+25 Trust, +15 Respect, +4 Settlement Approval). Refusing rebuffs overture (+5 Resentment)."
 			faction.set_cooldown(&"alliance", current_tick + ACTION_COOLDOWN_TICKS * 2)
+
+		ACTION_ESCALATE_WAR:
+			var war: WarState = diplomacy.create_war(faction.id, target_id, candidate.get("reason", "Border dispute"), current_tick, WarState.STATUS_CRISIS)
+			faction.set_cooldown(&"war", current_tick + ACTION_COOLDOWN_TICKS * 3)
+			faction.add_memory(
+				current_tick,
+				faction.id,
+				target_id,
+				&"war_escalated",
+				30.0,
+				"Mobilized border expedition against the Crown over simmering hostilities.",
+				600
+			)
+			diplomacy.add_chronicle(
+				current_tick,
+				"CRISIS: %s issued an armed ultimatum to the Crown!" % faction.display_name,
+				&"crisis"
+			)
+			return # War created directly, not dispatched as player proposal
 
 	diplomacy.add_proposal(prop)
 	diplomacy.add_chronicle(current_tick, "Received %s from %s." % [
@@ -528,3 +584,179 @@ func resolve_player_response(
 
 	diplomacy.remove_proposal(prop.id)
 	return {"ok": true, "status": prop.status}
+
+# =========================================================================
+# WAR LIFECYCLE & PEACE NEGOTIATIONS
+# =========================================================================
+
+func _advance_war_lifecycles(
+	diplomacy: DiplomacyState,
+	current_tick: int,
+	player_inventory: Inventory
+) -> void:
+	var active_list: Array[WarState] = []
+	for war in diplomacy.active_wars:
+		if war.status == WarState.STATUS_CRISIS:
+			# After 24 ticks of crisis warning, escalate to open war
+			if (current_tick - war.start_tick) >= 24:
+				war.transition_to(WarState.STATUS_WAR, current_tick, "Crisis escalated to open warfare")
+				diplomacy.add_chronicle(
+					current_tick,
+					"WAR DECLARED: %s declared open war on %s!" % [
+						diplomacy.factions.get(war.initiating_faction, FactionState.new()).display_name,
+						diplomacy.factions.get(war.target_faction, FactionState.new()).display_name
+					],
+					&"war_declaration"
+				)
+				# Check for defensive pact intervention
+				_check_defensive_pact_intervention(diplomacy, war, current_tick, player_inventory)
+			active_list.append(war)
+
+		elif war.status == WarState.STATUS_CEASEFIRE:
+			war.ceasefire_ticks_remaining -= DECISION_INTERVAL_TICKS
+			if war.ceasefire_ticks_remaining <= 0:
+				war.transition_to(WarState.STATUS_PEACE, current_tick, "Ceasefire elapsed into permanent peace")
+				diplomacy.add_chronicle(
+					current_tick,
+					"PEACE RESTORED: Ceasefire between %s and %s concluded in permanent peace." % [
+						diplomacy.factions.get(war.initiating_faction, FactionState.new()).display_name,
+						diplomacy.factions.get(war.target_faction, FactionState.new()).display_name
+					],
+					&"peace"
+				)
+				diplomacy.war_history.append(war.serialize())
+			else:
+				active_list.append(war)
+
+		elif war.status == WarState.STATUS_WAR:
+			active_list.append(war)
+
+		elif war.status == WarState.STATUS_PEACE:
+			diplomacy.war_history.append(war.serialize())
+
+	diplomacy.active_wars = active_list
+
+func _check_defensive_pact_intervention(
+	diplomacy: DiplomacyState,
+	war: WarState,
+	current_tick: int,
+	player_inventory: Inventory
+) -> void:
+	if war.target_faction == FactionCatalog.FACTION_PLAYER:
+		for f_id in FactionCatalog.NEIGHBOUR_FACTION_IDS:
+			if f_id == war.initiating_faction:
+				continue
+			var ally: FactionState = diplomacy.factions.get(f_id, null)
+			if ally != null and ally.has_active_treaty(&"defensive_pact", FactionCatalog.FACTION_PLAYER):
+				# Ally honors treaty
+				var subsidy: int = 25
+				ally.treasury = maxi(0, ally.treasury - subsidy)
+				if player_inventory != null:
+					player_inventory.add_resource(&"coin", subsidy, "ALLIED WAR SUBSIDY")
+				
+				var rel_with_aggressor: DiplomaticRelationship = diplomacy.get_relationship(f_id, war.initiating_faction)
+				rel_with_aggressor.modify_trust(-25.0)
+				rel_with_aggressor.modify_threat(20.0)
+				rel_with_aggressor.modify_resentment(15.0)
+
+				var rel_with_player: DiplomaticRelationship = diplomacy.get_relationship(f_id, FactionCatalog.FACTION_PLAYER)
+				rel_with_player.modify_trust(15.0)
+				rel_with_player.modify_respect(15.0)
+
+				ally.add_memory(
+					current_tick,
+					f_id,
+					FactionCatalog.FACTION_PLAYER,
+					&"defensive_pact_honored",
+					float(subsidy),
+					"Honored defensive alliance treaty and delivered %d gold in war subsidies to the Crown." % subsidy,
+					600
+				)
+				diplomacy.add_chronicle(
+					current_tick,
+					"ALLIED INTERVENTION: %s honored their defensive pact with the Crown and delivered %d gold in war subsidies!" % [
+						ally.display_name, subsidy
+					],
+					&"allied_intervention"
+				)
+
+func negotiate_ceasefire(diplomacy: DiplomacyState, war_id: int, current_tick: int) -> Dictionary:
+	var war: WarState = _find_war_by_id(diplomacy, war_id)
+	if war == null:
+		return {"ok": false, "reason": "War record not found"}
+	if war.status != WarState.STATUS_WAR:
+		return {"ok": false, "reason": "War is not currently in active conflict"}
+
+	var ok: bool = war.transition_to(WarState.STATUS_CEASEFIRE, current_tick, "Bilateral truce agreed")
+	if not ok:
+		return {"ok": false, "reason": "Failed to transition to ceasefire"}
+
+	var init_fac: FactionState = diplomacy.factions.get(war.initiating_faction, null)
+	var target_fac: FactionState = diplomacy.factions.get(war.target_faction, null)
+	var init_name: String = init_fac.display_name if init_fac else str(war.initiating_faction)
+	var target_name: String = target_fac.display_name if target_fac else str(war.target_faction)
+
+	var rel: DiplomaticRelationship = diplomacy.get_relationship(war.initiating_faction, war.target_faction)
+	rel.modify_threat(-15.0)
+
+	if init_fac != null:
+		init_fac.add_memory(current_tick, war.target_faction, war.initiating_faction, &"ceasefire_signed", 15.0, "Agreed to temporary ceasefire.", 400)
+	if target_fac != null:
+		target_fac.add_memory(current_tick, war.initiating_faction, war.target_faction, &"ceasefire_signed", 15.0, "Agreed to temporary ceasefire.", 400)
+
+	diplomacy.add_chronicle(
+		current_tick,
+		"CEASEFIRE RATIFIED: %s and %s signed a 240-tick truce." % [init_name, target_name],
+		&"ceasefire"
+	)
+	return {"ok": true, "status": war.status}
+
+func conclude_peace_treaty(diplomacy: DiplomacyState, war_id: int, current_tick: int, outcome: StringName = WarState.OUTCOME_WHITE_PEACE) -> Dictionary:
+	var war: WarState = _find_war_by_id(diplomacy, war_id)
+	if war == null:
+		return {"ok": false, "reason": "War record not found"}
+	if war.status not in [WarState.STATUS_WAR, WarState.STATUS_CEASEFIRE]:
+		return {"ok": false, "reason": "War is already concluded"}
+
+	war.outcome = outcome
+	var ok: bool = war.transition_to(WarState.STATUS_PEACE, current_tick, "Formal peace treaty concluded")
+	if not ok:
+		return {"ok": false, "reason": "Failed to transition to peace"}
+
+	var init_fac: FactionState = diplomacy.factions.get(war.initiating_faction, null)
+	var target_fac: FactionState = diplomacy.factions.get(war.target_faction, null)
+	var init_name: String = init_fac.display_name if init_fac else str(war.initiating_faction)
+	var target_name: String = target_fac.display_name if target_fac else str(war.target_faction)
+
+	var rel: DiplomaticRelationship = diplomacy.get_relationship(war.initiating_faction, war.target_faction)
+	rel.modify_threat(-20.0)
+	rel.modify_resentment(-10.0)
+
+	if init_fac != null:
+		init_fac.add_memory(current_tick, war.target_faction, war.initiating_faction, &"peace_concluded", 30.0, "Concluded permanent peace treaty.", 600)
+	if target_fac != null:
+		target_fac.add_memory(current_tick, war.initiating_faction, war.target_faction, &"peace_concluded", 30.0, "Concluded permanent peace treaty.", 600)
+
+	diplomacy.add_chronicle(
+		current_tick,
+		"PEACE TREATY RATIFIED: Formal peace established between %s and %s." % [init_name, target_name],
+		&"peace"
+	)
+
+	# Move from active_wars to war_history
+	var remaining_wars: Array[WarState] = []
+	for w in diplomacy.active_wars:
+		if w.id != war_id:
+			remaining_wars.append(w)
+		else:
+			diplomacy.war_history.append(w.serialize())
+	diplomacy.active_wars = remaining_wars
+
+	return {"ok": true, "status": war.status, "outcome": war.outcome}
+
+func _find_war_by_id(diplomacy: DiplomacyState, war_id: int) -> WarState:
+	for w in diplomacy.active_wars:
+		if w.id == war_id:
+			return w
+	return null
+

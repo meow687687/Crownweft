@@ -6,6 +6,9 @@ var relationships: Dictionary = {} # String ("a:b") -> DiplomaticRelationship
 var pending_proposals: Array[DiplomaticProposal] = []
 var diplomatic_chronicle: Array = []
 var proposal_counter: int = 1
+var active_wars: Array[WarState] = []
+var war_history: Array = []
+var war_counter: int = 1
 
 func _init() -> void:
 	for f_id in FactionCatalog.FACTION_IDS:
@@ -80,6 +83,36 @@ func remove_proposal(id: int) -> void:
 	if idx >= 0:
 		pending_proposals.remove_at(idx)
 
+func get_active_war(fac_a: StringName, fac_b: StringName) -> WarState:
+	for w in active_wars:
+		if w.is_active():
+			if (w.initiating_faction == fac_a and w.target_faction == fac_b) or (w.initiating_faction == fac_b and w.target_faction == fac_a):
+				return w
+	return null
+
+func has_active_war(fac_a: StringName, fac_b: StringName = &"") -> bool:
+	for w in active_wars:
+		if w.is_active():
+			if fac_b == &"":
+				if w.initiating_faction == fac_a or w.target_faction == fac_a:
+					return true
+			else:
+				if (w.initiating_faction == fac_a and w.target_faction == fac_b) or (w.initiating_faction == fac_b and w.target_faction == fac_a):
+					return true
+	return false
+
+func create_war(init_fac: StringName, target_fac: StringName, reason: String, current_tick: int, initial_status: StringName = WarState.STATUS_CRISIS) -> WarState:
+	var existing: WarState = get_active_war(init_fac, target_fac)
+	if existing != null:
+		return existing
+	if init_fac == target_fac or init_fac == &"" or target_fac == &"":
+		return null
+		
+	var w := WarState.new(war_counter, init_fac, target_fac, initial_status, reason, current_tick)
+	war_counter += 1
+	active_wars.append(w)
+	return w
+
 func serialize() -> Dictionary:
 	var facs_dict: Dictionary = {}
 	for f_id in factions:
@@ -93,12 +126,26 @@ func serialize() -> Dictionary:
 	for p in pending_proposals:
 		props_arr.append(p.serialize())
 
+	var wars_arr: Array = []
+	for w in active_wars:
+		wars_arr.append(w.serialize())
+
+	var hist_arr: Array = []
+	for h in war_history:
+		if h is WarState:
+			hist_arr.append(h.serialize())
+		elif h is Dictionary:
+			hist_arr.append(h.duplicate(true))
+
 	return {
 		"factions": facs_dict,
 		"relationships": rels_dict,
 		"pending_proposals": props_arr,
 		"diplomatic_chronicle": diplomatic_chronicle.duplicate(true),
-		"proposal_counter": proposal_counter
+		"proposal_counter": proposal_counter,
+		"active_wars": wars_arr,
+		"war_history": hist_arr,
+		"war_counter": war_counter
 	}
 
 static func deserialize(dict: Dictionary) -> DiplomacyState:
@@ -119,4 +166,17 @@ static func deserialize(dict: Dictionary) -> DiplomacyState:
 
 	state.diplomatic_chronicle = (dict.get("diplomatic_chronicle", []) as Array).duplicate(true)
 	state.proposal_counter = int(dict.get("proposal_counter", 1))
+
+	state.active_wars.clear()
+	var raw_wars: Array = dict.get("active_wars", [])
+	for w_dict in raw_wars:
+		state.active_wars.append(WarState.deserialize(w_dict))
+
+	state.war_history.clear()
+	var raw_hist: Array = dict.get("war_history", [])
+	for h in raw_hist:
+		if h is Dictionary:
+			state.war_history.append(h.duplicate(true))
+
+	state.war_counter = int(dict.get("war_counter", 1))
 	return state
