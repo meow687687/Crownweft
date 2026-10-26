@@ -22,12 +22,19 @@ func tick_building(
 	recipe: RecipeDef,
 	world: WorldState = null,
 	workers_present: int = -1,
-	workers: Array[CitizenState] = []
+	workers: Array[CitizenState] = [],
+	government: GovernmentState = null
 ) -> void:
 	if building == null or recipe == null:
 		return
 	if not building.enabled:
 		building.current_block_reason = &"DISABLED"
+		return
+
+	# Law enforcement: Check if activity is blocked by decree
+	var for_pol: StringName = government.get_policy(LawCatalog.LAW_FORESTRY) if government != null else &"managed"
+	if building.definition_id == &"woodcutter" and not LawCatalog.is_forestry_harvest_allowed(for_pol):
+		building.current_block_reason = &"LAW_BLOCKED: PROTECTED_FORESTS"
 		return
 
 	var effective_workers: int = building.assigned_workers if workers_present < 0 else workers_present
@@ -105,14 +112,19 @@ func tick_building(
 
 	building.current_block_reason = &""
 
+	# Labour regulation modifiers
+	var lab_pol: StringName = government.get_policy(LawCatalog.LAW_LABOUR) if government != null else &"standard"
+	var speed_mod: float = LawCatalog.get_labour_speed_mod(lab_pol)
+	var drain_mod: float = LawCatalog.get_labour_drain_mod(lab_pol)
+
 	# Active work drains energy and yields experience only when actively progressing
 	for w: CitizenState in workers:
-		w.consume_energy(CitizenState.WORK_ENERGY_DRAIN, true)
+		w.consume_energy(CitizenState.WORK_ENERGY_DRAIN * drain_mod, true)
 		if skill_name != &"":
 			w.gain_experience(skill_name, 0.1)
 
-	# Progress advances modulated by skill factor
-	building.production_work_accum += skill_factor
+	# Progress advances modulated by skill factor and government labour policy
+	building.production_work_accum += (skill_factor * speed_mod)
 	var steps: int = int(building.production_work_accum)
 	building.production_work_accum -= float(steps)
 	building.production_progress += steps
@@ -120,7 +132,7 @@ func tick_building(
 	if building.production_progress < recipe.duration_ticks:
 		return
 
-	# Determine final outputs with skill bonuses
+	# Determine final outputs with skill bonuses and forestry policy
 	for out_res: StringName in recipe.outputs:
 		var bonus_out: int = 0
 		if building.definition_id == &"woodcutter" and out_res == &"timber":
@@ -128,6 +140,8 @@ func tick_building(
 				bonus_out = 1
 			elif skill_factor < 0.85:
 				bonus_out = -1
+			if for_pol == &"open_extraction":
+				bonus_out += LawCatalog.get_forestry_bonus_timber(for_pol)
 		var final_amount: int = maxi(1, int(recipe.outputs[out_res]) + bonus_out)
 		if not building.inventory.add_resource(out_res, final_amount, "PRODUCTION_OUTPUT", true):
 			building.current_block_reason = &"OUTPUT_FULL"

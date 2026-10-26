@@ -15,8 +15,9 @@ var production: ProductionSystem = null
 var construction: ConstructionSystem = null
 var needs: NeedsSystem = null
 var combat: CombatSystem = null
-var economy: EconomyState = null
-var economy_system: EconomySystem = null
+var economy: EconomyState = EconomyState.new()
+var economy_system: EconomySystem = EconomySystem.new()
+var government: GovernmentState = GovernmentState.new()
 
 var buildings: Array[BuildingState] = []
 var citizens: Array[CitizenState] = []
@@ -59,6 +60,7 @@ func _init_simulation() -> void:
 	combat = CombatSystem.new()
 	economy = EconomyState.new()
 	economy_system = EconomySystem.new()
+	government = GovernmentState.new()
 	
 	combat.raid_announced.connect(func(seconds_left: float):
 		ui.show_raid_warning(seconds_left)
@@ -129,6 +131,10 @@ func _setup_signals() -> void:
 	ui.citizen_selected_from_panel.connect(_on_citizen_selected_from_panel)
 	ui.recruit_unit_requested.connect(_on_recruit_unit_requested)
 	ui.tax_level_cycled.connect(_on_tax_level_cycled)
+	ui.toggle_government_panel_requested.connect(_on_toggle_government_panel)
+	ui.policy_enact_requested.connect(func(l_id: StringName, o_id: StringName):
+		enact_policy(l_id, o_id, "Decree via Laws Panel")
+	)
 	ui.save_game_requested.connect(_on_save_game)
 	ui.load_game_requested.connect(_on_load_game)
 
@@ -280,6 +286,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			_on_toggle_workforce_panel()
 			get_viewport().set_input_as_handled()
 			return
+		elif kb_event.keycode == KEY_L and active_build_id == &"":
+			_on_toggle_government_panel()
+			get_viewport().set_input_as_handled()
+			return
 
 	if active_build_id != &"" and BuildingCatalog.is_building_resizable(active_build_id):
 		if event is InputEventKey and event.pressed:
@@ -312,8 +322,12 @@ func _unhandled_input(event: InputEvent) -> void:
 		if mouse_screen.y < 104.0 or mouse_screen.y > (screen_size.y - 142.0):
 			return
 		if ui != null and ui.panel_workforce != null and ui.panel_workforce.visible:
-			var wf_rect := Rect2(screen_size * 0.5 - Vector2(330, 225), Vector2(660, 440))
+			var wf_rect := Rect2(screen_size * 0.5 - Vector2(340, 250), Vector2(680, 500))
 			if wf_rect.has_point(mouse_screen):
+				return
+		if ui != null and ui.panel_government != null and ui.panel_government.visible:
+			var gov_rect := Rect2(screen_size * 0.5 - Vector2(340, 250), Vector2(680, 500))
+			if gov_rect.has_point(mouse_screen):
 				return
 		if ui != null and ui.panel_inspector != null and ui.panel_inspector.visible and mouse_screen.x > (screen_size.x - 350.0):
 			return
@@ -419,7 +433,7 @@ func _update_citizen_inspector() -> void:
 		return
 	var wp: BuildingState = _find_building_by_entity_id(selected_citizen.workplace_id)
 	var hm: BuildingState = _find_building_by_entity_id(selected_citizen.home_building_id)
-	ui.show_citizen_details(selected_citizen, wp, hm)
+	ui.show_citizen_details(selected_citizen, wp, hm, government)
 
 func _find_unit_at(pos: Vector2) -> MilitaryUnitState:
 	for u in military_units:
@@ -877,12 +891,12 @@ func _simulation_tick() -> void:
 	for building: BuildingState in buildings:
 		if building.is_under_construction():
 			var present_builders: Array[CitizenState] = _get_workers_present_at_building(building)
-			construction.tick_building(building, present_builders.size(), current_tick, present_builders)
+			construction.tick_building(building, present_builders.size(), current_tick, present_builders, government)
 		elif building.status == BuildingState.Status.ACTIVE:
 			var recipe: RecipeDef = defs.get(building.definition_id, {}).get("recipe", null)
 			if recipe != null:
 				var present_workers: Array[CitizenState] = _get_workers_present_at_building(building)
-				production.tick_building(building, recipe, world_state, present_workers.size(), present_workers)
+				production.tick_building(building, recipe, world_state, present_workers.size(), present_workers, government)
 
 	# 2. Needs are supplied only by inventories the citizen can physically reach.
 	var food_inventories: Array[Inventory] = []
@@ -909,7 +923,8 @@ func _simulation_tick() -> void:
 		needs_report.get("at_risk", 0),
 		main_inv,
 		current_tick,
-		citizens
+		citizens,
+		government
 	)
 
 	# Periodic check for social status advancement
@@ -1291,17 +1306,69 @@ func _update_ui_state(needs_report: Dictionary) -> void:
 		_update_building_inspector()
 
 func _on_tax_level_cycled() -> void:
-	if economy == null:
+	cycle_tax_level()
+
+func cycle_tax_level() -> void:
+	if government == null:
 		return
-	match economy.tax_level:
-		EconomyState.TaxLevel.LOW:
-			economy.tax_level = EconomyState.TaxLevel.NORMAL
-		EconomyState.TaxLevel.NORMAL:
-			economy.tax_level = EconomyState.TaxLevel.HIGH
-		EconomyState.TaxLevel.HIGH:
-			economy.tax_level = EconomyState.TaxLevel.LOW
-	ui.update_economy(economy.get_tax_level_name(), economy.approval)
-	ui.show_toast("Tax rate changed to %s" % economy.get_tax_level_name(), false)
+	var current_opt: StringName = government.get_policy(LawCatalog.LAW_TAXATION)
+	var next_opt: StringName = &"standard"
+	match current_opt:
+		&"low":
+			next_opt = &"standard"
+		&"standard":
+			next_opt = &"high"
+		&"high":
+			next_opt = &"low"
+		_:
+			next_opt = &"standard"
+	enact_policy(LawCatalog.LAW_TAXATION, next_opt, "Tax level cycled via HUD")
+
+func enact_policy(law_id: StringName, option_id: StringName, reason: String = "") -> bool:
+	if government == null:
+		return false
+	var ok: bool = government.enact_policy(law_id, option_id, current_tick, reason)
+	if ok:
+		if law_id == LawCatalog.LAW_TAXATION:
+			match option_id:
+				&"low":
+					economy.tax_level = EconomyState.TaxLevel.LOW
+				&"standard":
+					economy.tax_level = EconomyState.TaxLevel.NORMAL
+				&"high":
+					economy.tax_level = EconomyState.TaxLevel.HIGH
+			if ui != null and economy != null:
+				ui.update_economy(economy.get_tax_level_name(), economy.approval)
+		var opt_def: Dictionary = LawCatalog.get_option_def(law_id, option_id)
+		var opt_name: String = str(opt_def.get("display_name", str(option_id)))
+		if ui != null:
+			ui.show_toast("Policy enacted: %s" % opt_name, false)
+			_update_government_ui()
+	return ok
+
+func _on_toggle_government_panel() -> void:
+	if ui != null:
+		ui.toggle_government_panel()
+		if ui.is_government_panel_visible():
+			_update_government_ui()
+
+func _update_government_ui() -> void:
+	if ui == null or government == null:
+		return
+	var has_admin: bool = false
+	for c in citizens:
+		if c.role_id == &"administrator" and c.workplace_id > 0:
+			has_admin = true
+			break
+	var gov_data: Dictionary = {
+		"enacted_policies": government.enacted_policies.duplicate(),
+		"has_admin": has_admin,
+		"treasury_coin": buildings[0].inventory.get_quantity(&"coin") if not buildings.is_empty() else 0,
+		"last_tax_income": economy.last_tax_income if economy != null else 0,
+		"approval": economy.approval if economy != null else 60.0,
+		"history": government.get_recent_history(5)
+	}
+	ui.update_government_panel(gov_data)
 
 func _on_save_game() -> void:
 	var success: bool = SaveService.save_game_to_file(
@@ -1314,7 +1381,8 @@ func _on_save_game() -> void:
 		current_tick,
 		sim_speed_multiplier,
 		SaveService.DEFAULT_SAVE_PATH,
-		auto_staffing_enabled
+		auto_staffing_enabled,
+		government
 	)
 	if success:
 		ui.show_toast("Realm state saved successfully", false)
@@ -1332,6 +1400,7 @@ func _on_load_game() -> void:
 		renderer.world_state = world_state
 		renderer.invalidate_world_visuals()
 	economy = loaded["economy"]
+	government = loaded.get("government", GovernmentState.new())
 	buildings = loaded["buildings"]
 	citizens = loaded["citizens"]
 	military_units = loaded["military_units"]
@@ -1552,7 +1621,7 @@ func get_workforce_citizens_data() -> Array[Dictionary]:
 			"religion_name": ReligionCatalog.get_display_name(c.religion_id),
 			"doctrine_id": c.doctrine_id,
 			"doctrine_name": DoctrineCatalog.get_display_name(c.doctrine_id),
-			"active_belief_conflict": c.get_active_belief_conflict(),
+			"active_belief_conflict": c.get_active_belief_conflict(government),
 			"role": c.role_id,
 			"workplace_id": c.workplace_id,
 			"workplace_str": wp_str,
@@ -1592,7 +1661,7 @@ func get_assigned_citizens_for_building(building: BuildingState) -> Array[Dictio
 				"religion_name": ReligionCatalog.get_display_name(c.religion_id),
 				"doctrine_id": c.doctrine_id,
 				"doctrine_name": DoctrineCatalog.get_display_name(c.doctrine_id),
-				"active_belief_conflict": c.get_active_belief_conflict(),
+				"active_belief_conflict": c.get_active_belief_conflict(government),
 				"role": c.role_id,
 				"state_str": state_str,
 				"skill_name": relevant_skill,

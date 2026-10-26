@@ -95,7 +95,7 @@ func rejects_food(food_id: StringName) -> bool:
 		return true
 	return false
 
-func get_active_belief_conflict() -> String:
+func get_active_belief_conflict(government: GovernmentState = null) -> String:
 	# 1. Dietary conflict
 	if hunger_counter > 0 and rejects_food(&"meat") and food_state != FoodState.FED:
 		return "Rejects meat; available dietary alternatives are insufficient."
@@ -105,6 +105,14 @@ func get_active_belief_conflict() -> String:
 	# 3. Work ethic restlessness
 	if role_id == &"unassigned" and workplace_id <= 0 and get_conviction(&"work_ethic") >= 0.8:
 		return "Values diligent labor; currently idle and unassigned."
+	# 4. Law vs Personal Belief conflicts
+	if government != null:
+		var for_pol: StringName = government.get_policy(LawCatalog.LAW_FORESTRY)
+		if for_pol == &"open_extraction" and get_conviction(&"nature_conservation") >= 0.7:
+			return "Disapproves of open extraction; forestry decree conflicts with personal conservation conviction."
+		var lab_pol: StringName = government.get_policy(LawCatalog.LAW_LABOUR)
+		if lab_pol == &"extended" and get_conviction(&"work_ethic") < 0.4:
+			return "Exhausted by extended shifts; labour decree conflicts with personal rest needs."
 	return ""
 
 func init_starting_skills(seed_offset: int = 0) -> void:

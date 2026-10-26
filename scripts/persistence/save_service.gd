@@ -13,7 +13,8 @@ static func save_game_to_file(
 	current_tick: int,
 	sim_speed: float,
 	file_path: String = DEFAULT_SAVE_PATH,
-	auto_staffing_enabled: bool = false
+	auto_staffing_enabled: bool = false,
+	government: GovernmentState = null
 ) -> bool:
 	var data: Dictionary = SaveSchema.serialize(
 		world_state,
@@ -24,7 +25,8 @@ static func save_game_to_file(
 		job_board,
 		current_tick,
 		sim_speed,
-		auto_staffing_enabled
+		auto_staffing_enabled,
+		government
 	)
 	var json_str: String = JSON.stringify(data, "  ")
 	

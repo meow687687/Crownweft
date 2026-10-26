@@ -14,6 +14,8 @@ signal recruit_unit_requested(unit_def_id: StringName)
 signal tax_level_cycled()
 signal save_game_requested()
 signal load_game_requested()
+signal toggle_government_panel_requested()
+signal policy_enact_requested(law_id: StringName, option_id: StringName)
 
 # Top Bar Elements
 var label_coin: Label = null
@@ -79,6 +81,14 @@ var culture_filter_buttons: Dictionary = {}
 var _last_workforce_citizens: Array = []
 var _last_workforce_summary: Dictionary = {}
 var _last_auto_staffing: bool = false
+
+# Government & Laws Panel
+var btn_government: Button = null
+var panel_government: PanelContainer = null
+var label_gov_summary: Label = null
+var box_gov_laws: VBoxContainer = null
+var label_gov_history: Label = null
+var _last_gov_data: Dictionary = {}
 
 func _ready() -> void:
 	_build_ui_layout()
@@ -156,6 +166,7 @@ func _build_ui_layout() -> void:
 	_highlight_speed_button(btn_speed_1x)
 	btn_overlay = _create_ctrl_button(ctrl_box, "LOGISTICS", func(): toggle_overlay_requested.emit())
 	btn_workforce = _create_ctrl_button(ctrl_box, "WORKFORCE", func(): toggle_workforce_panel_requested.emit())
+	btn_government = _create_ctrl_button(ctrl_box, "LAWS", func(): toggle_government_panel_requested.emit())
 	_create_ctrl_button(ctrl_box, "SAVE", func(): save_game_requested.emit())
 	_create_ctrl_button(ctrl_box, "LOAD", func(): load_game_requested.emit())
 
@@ -359,6 +370,7 @@ func _build_ui_layout() -> void:
 	box_recruitment.add_child(btn_archer)
 
 	_build_workforce_panel()
+	_build_government_panel()
 
 func _create_badge(parent: Node, title: String, val: String, col: Color) -> Label:
 	var lbl := Label.new()
@@ -644,6 +656,9 @@ func show_building_details(building: BuildingState, def_info: Dictionary, worker
 	elif building.current_block_reason == &"NO_RESOURCE":
 		label_inspector_status.text = "STATUS: BLOCKED — NO NEARBY DEPOSIT"
 		label_inspector_status.add_theme_color_override("font_color", UITheme.COLOR_RED_ALERT)
+	elif building.current_block_reason.begins_with("LAW_BLOCKED"):
+		label_inspector_status.text = "STATUS: BLOCKED BY LAW — Protected Forests decree prohibits timber harvesting"
+		label_inspector_status.add_theme_color_override("font_color", Color.ORANGE)
 	elif building.current_block_reason == &"DISABLED":
 		label_inspector_status.text = "STATUS: DISABLED"
 		label_inspector_status.add_theme_color_override("font_color", Color.LIGHT_GRAY)
@@ -685,7 +700,7 @@ func show_building_details(building: BuildingState, def_info: Dictionary, worker
 	if box_recruitment != null:
 		box_recruitment.visible = (building.definition_id == &"barracks")
 
-func show_citizen_details(citizen: CitizenState, workplace: BuildingState = null, home: BuildingState = null) -> void:
+func show_citizen_details(citizen: CitizenState, workplace: BuildingState = null, home: BuildingState = null, government: GovernmentState = null) -> void:
 	if citizen == null:
 		panel_inspector.visible = false
 		return
@@ -799,7 +814,7 @@ func show_citizen_details(citizen: CitizenState, workplace: BuildingState = null
 
 	var text: String = "CULTURE: %s\n" % cult_name
 	text += "RELIGION: %s (%s)\n" % [rel_name, doc_name]
-	var belief_conflict: String = citizen.get_active_belief_conflict()
+	var belief_conflict: String = citizen.get_active_belief_conflict(government)
 	if belief_conflict != "":
 		text += "BELIEF CONFLICT: %s\n" % belief_conflict
 	text += "SPECIES: %s\n" % sp_name
@@ -1117,4 +1132,171 @@ func _refresh_workforce_citizen_list() -> void:
 		row.add_child(btn_focus)
 
 		box_workforce_citizens.add_child(row)
+
+func _build_government_panel() -> void:
+	panel_government = PanelContainer.new()
+	panel_government.set_anchors_preset(Control.PRESET_CENTER)
+	panel_government.offset_left = -340
+	panel_government.offset_top = -250
+	panel_government.offset_right = 340
+	panel_government.offset_bottom = 250
+	panel_government.add_theme_stylebox_override("panel", UITheme.create_panel_style(UITheme.COLOR_BG_PANEL, UITheme.COLOR_BORDER_GOLD, 2, 6))
+	panel_government.visible = false
+	panel_government.mouse_filter = Control.MOUSE_FILTER_STOP
+	add_child(panel_government)
+
+	var main_vbox := VBoxContainer.new()
+	main_vbox.add_theme_constant_override("separation", 8)
+	panel_government.add_child(main_vbox)
+
+	var header := HBoxContainer.new()
+	header.add_theme_constant_override("separation", 10)
+	main_vbox.add_child(header)
+
+	var lbl_title := Label.new()
+	lbl_title.text = "REALM GOVERNMENT & LAWS"
+	lbl_title.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+	lbl_title.add_theme_font_size_override("font_size", 14)
+	lbl_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(lbl_title)
+
+	var btn_close := Button.new()
+	btn_close.text = "X"
+	btn_close.custom_minimum_size = Vector2(28, 26)
+	UITheme.apply_button_style(btn_close)
+	btn_close.pressed.connect(func(): panel_government.visible = false)
+	header.add_child(btn_close)
+
+	main_vbox.add_child(HSeparator.new())
+
+	label_gov_summary = Label.new()
+	label_gov_summary.text = "Treasury: 50 Coin | Approval: 60% | Administration: Unstaffed"
+	label_gov_summary.add_theme_font_size_override("font_size", 11)
+	label_gov_summary.add_theme_color_override("font_color", Color("#c8d6e5"))
+	main_vbox.add_child(label_gov_summary)
+
+	main_vbox.add_child(HSeparator.new())
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	main_vbox.add_child(scroll)
+
+	box_gov_laws = VBoxContainer.new()
+	box_gov_laws.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box_gov_laws.add_theme_constant_override("separation", 10)
+	scroll.add_child(box_gov_laws)
+
+	main_vbox.add_child(HSeparator.new())
+
+	label_gov_history = Label.new()
+	label_gov_history.text = "POLICY CHRONICLE:\n  • Settlement established with default statutes."
+	label_gov_history.add_theme_font_size_override("font_size", 10)
+	label_gov_history.add_theme_color_override("font_color", UITheme.COLOR_TEXT_MUTED)
+	label_gov_history.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	main_vbox.add_child(label_gov_history)
+
+func toggle_government_panel() -> void:
+	if panel_government != null:
+		panel_government.visible = not panel_government.visible
+		if panel_government.visible:
+			_refresh_government_panel()
+
+func is_government_panel_visible() -> bool:
+	return panel_government != null and panel_government.visible
+
+func update_government_panel(gov_data: Dictionary) -> void:
+	_last_gov_data = gov_data
+	if panel_government != null and panel_government.visible:
+		_refresh_government_panel()
+
+func _refresh_government_panel() -> void:
+	if box_gov_laws == null:
+		return
+
+	var enacted: Dictionary = _last_gov_data.get("enacted_policies", {})
+	var has_admin: bool = _last_gov_data.get("has_admin", false)
+	var treasury: int = _last_gov_data.get("treasury_coin", 0)
+	var tax_inc: int = _last_gov_data.get("last_tax_income", 0)
+	var approval_val: float = _last_gov_data.get("approval", 60.0)
+
+	if label_gov_summary != null:
+		var admin_str: String = "Active (Town Hall Administrator +15% tax yield)" if has_admin else "Unstaffed (Assign Administrator to Town Hall)"
+		label_gov_summary.text = "Treasury: %d Coin (Last Tax: +%d) | Approval: %d%% | Administration: %s" % [
+			treasury, tax_inc, int(roundf(approval_val)), admin_str
+		]
+
+	for child in box_gov_laws.get_children():
+		child.queue_free()
+
+	for law_id in LawCatalog.LAW_IDS:
+		var law_def: Dictionary = LawCatalog.get_law_def(law_id)
+		var current_opt: StringName = enacted.get(law_id, LawCatalog.get_default_option(law_id))
+
+		var law_box := VBoxContainer.new()
+		law_box.add_theme_constant_override("separation", 4)
+		box_gov_laws.add_child(law_box)
+
+		var title_lbl := Label.new()
+		title_lbl.text = "%s" % str(law_def.get("display_name", str(law_id))).to_upper()
+		title_lbl.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+		title_lbl.add_theme_font_size_override("font_size", 12)
+		law_box.add_child(title_lbl)
+
+		var desc_lbl := Label.new()
+		desc_lbl.text = str(law_def.get("description", ""))
+		desc_lbl.add_theme_font_size_override("font_size", 10)
+		desc_lbl.add_theme_color_override("font_color", Color("#b0bec5"))
+		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		law_box.add_child(desc_lbl)
+
+		var btn_row := HBoxContainer.new()
+		btn_row.add_theme_constant_override("separation", 6)
+		law_box.add_child(btn_row)
+
+		var options: Dictionary = law_def.get("options", {})
+		for opt_key in options:
+			var opt_def: Dictionary = options[opt_key]
+			var opt_btn := Button.new()
+			var is_selected: bool = (opt_key == current_opt)
+			opt_btn.text = "[ENACTED] %s" % opt_def.get("display_name") if is_selected else str(opt_def.get("display_name"))
+			opt_btn.custom_minimum_size = Vector2(0, 24)
+			opt_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			opt_btn.add_theme_font_size_override("font_size", 10)
+			UITheme.apply_button_style(opt_btn, is_selected)
+			var captured_law: StringName = law_id
+			var captured_opt: StringName = opt_key
+			opt_btn.pressed.connect(func():
+				policy_enact_requested.emit(captured_law, captured_opt)
+			)
+			btn_row.add_child(opt_btn)
+
+		var active_opt_def: Dictionary = options.get(current_opt, {})
+		var trade_lbl := Label.new()
+		trade_lbl.text = "Current Effects: %s" % str(active_opt_def.get("trade_offs", ""))
+		trade_lbl.add_theme_font_size_override("font_size", 10)
+		trade_lbl.add_theme_color_override("font_color", Color("#a5d6a7") if is_selected_positive(law_id, current_opt) else Color("#ffcc80"))
+		trade_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		law_box.add_child(trade_lbl)
+
+		law_box.add_child(HSeparator.new())
+
+	if label_gov_history != null:
+		var hist: Array = _last_gov_data.get("history", [])
+		if hist.is_empty():
+			label_gov_history.text = "POLICY CHRONICLE:\n  • Settlement established with default statutes."
+		else:
+			var h_text: String = "POLICY CHRONICLE:\n"
+			for entry in hist:
+				h_text += "  • %s\n" % str(entry.get("description", ""))
+			label_gov_history.text = h_text.strip_edges()
+
+func is_selected_positive(law_id: StringName, opt_id: StringName) -> bool:
+	if law_id == LawCatalog.LAW_TAXATION and opt_id == &"low":
+		return true
+	if law_id == LawCatalog.LAW_LABOUR and opt_id != &"extended":
+		return true
+	if law_id == LawCatalog.LAW_FORESTRY and opt_id != &"open_extraction":
+		return true
+	return false
 

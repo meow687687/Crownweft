@@ -13,8 +13,21 @@ static func serialize(
 	job_board: JobBoard,
 	current_tick: int,
 	sim_speed: float,
-	auto_staffing_enabled: bool = false
+	auto_staffing_enabled: bool = false,
+	government: GovernmentState = null
 ) -> Dictionary:
+	var gov_dict: Dictionary = {
+		"enacted_policies": {},
+		"policy_ticks": {},
+		"policy_history": []
+	}
+	if government != null:
+		for k in government.enacted_policies:
+			gov_dict["enacted_policies"][str(k)] = str(government.enacted_policies[k])
+		for k in government.policy_ticks:
+			gov_dict["policy_ticks"][str(k)] = int(government.policy_ticks[k])
+		gov_dict["policy_history"] = government.policy_history.duplicate(true)
+
 	var data: Dictionary = {
 		"meta": {
 			"schema_version": SCHEMA_VERSION,
@@ -24,6 +37,7 @@ static func serialize(
 			"sim_speed": sim_speed,
 			"auto_staffing_enabled": auto_staffing_enabled
 		},
+		"government": gov_dict,
 		"economy": {
 			"tax_level": economy.tax_level if economy != null else 1,
 			"approval": economy.approval if economy != null else 60.0,
@@ -375,5 +389,26 @@ static func deserialize(data: Dictionary) -> Dictionary:
 		job.assigned_citizen_id = j_dict.get("assigned_citizen_id", -1)
 		job.reserved_amount = j_dict.get("reserved_amount", 0)
 		board.jobs[job.id] = job
+
+	# Deserialize government
+	var gov_state := GovernmentState.new()
+	if data.has("government") and data["government"] is Dictionary:
+		var raw_gov: Dictionary = data["government"]
+		var raw_policies: Dictionary = raw_gov.get("enacted_policies", {})
+		for k in raw_policies:
+			var law_id: StringName = StringName(k)
+			var opt_id: StringName = StringName(raw_policies[k])
+			if LawCatalog.is_valid_law(law_id) and LawCatalog.is_valid_option(law_id, opt_id):
+				gov_state.enacted_policies[law_id] = opt_id
+		var raw_ticks: Dictionary = raw_gov.get("policy_ticks", {})
+		for k in raw_ticks:
+			gov_state.policy_ticks[StringName(k)] = int(raw_ticks[k])
+		var raw_hist = raw_gov.get("policy_history", [])
+		if raw_hist is Array:
+			gov_state.policy_history.clear()
+			for item in raw_hist:
+				if item is Dictionary:
+					gov_state.policy_history.append(item.duplicate(true))
+	result["government"] = gov_state
 		
 	return result
