@@ -231,11 +231,11 @@ func _build_ui_layout() -> void:
 		build_buttons[building_id] = btn
 
 	panel_inspector = PanelContainer.new()
-	panel_inspector.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	panel_inspector.set_anchors_preset(Control.PRESET_RIGHT_WIDE)
 	panel_inspector.offset_left = -340
 	panel_inspector.offset_top = 106
 	panel_inspector.offset_right = -10
-	panel_inspector.offset_bottom = -140
+	panel_inspector.offset_bottom = -144
 	panel_inspector.add_theme_stylebox_override("panel", UITheme.create_panel_style(UITheme.COLOR_BG_PANEL, UITheme.COLOR_BORDER_GOLD, 2, 6))
 	panel_inspector.visible = false
 	panel_inspector.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -791,9 +791,9 @@ func _build_workforce_panel() -> void:
 	panel_workforce = PanelContainer.new()
 	panel_workforce.set_anchors_preset(Control.PRESET_CENTER)
 	panel_workforce.offset_left = -330
-	panel_workforce.offset_top = -230
+	panel_workforce.offset_top = -225
 	panel_workforce.offset_right = 330
-	panel_workforce.offset_bottom = 230
+	panel_workforce.offset_bottom = 215
 	panel_workforce.add_theme_stylebox_override("panel", UITheme.create_panel_style(UITheme.COLOR_BG_PANEL, UITheme.COLOR_BORDER_GOLD, 2, 6))
 	panel_workforce.visible = false
 	panel_workforce.mouse_filter = Control.MOUSE_FILTER_STOP

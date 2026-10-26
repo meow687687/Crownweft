@@ -14,12 +14,12 @@ const PRIORITY_DEFAULT: int = 3
 
 static func get_priority_name(p: int) -> String:
 	match p:
-		1: return "Low (1)"
-		2: return "Below Normal (2)"
-		3: return "Normal (3)"
-		4: return "High (4)"
-		5: return "Urgent (5)"
-		_: return "Normal (3)"
+		1: return "Low"
+		2: return "Below Normal"
+		3: return "Normal"
+		4: return "High"
+		5: return "Urgent"
+		_: return "Normal"
 
 @export var entity_id: int = 0
 @export var definition_id: StringName = &""

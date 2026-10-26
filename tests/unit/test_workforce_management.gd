@@ -193,22 +193,22 @@ func test_5_workplace_priority_scale_and_deterministic_order() -> void:
 	
 	var farm: BuildingState = world.place_building(&"farm", Vector2i(10, 10), true)
 	assert_eq(farm.work_priority, BuildingState.PRIORITY_DEFAULT, "Default priority should be Normal (3)")
-	assert_eq(BuildingState.get_priority_name(farm.work_priority), "Normal (3)", "Priority 3 name is Normal (3)")
+	assert_eq(BuildingState.get_priority_name(farm.work_priority), "Normal", "Priority 3 name is Normal")
 	
 	# Clamping test
 	world.set_building_priority(farm, 10)
 	assert_eq(farm.work_priority, BuildingState.PRIORITY_MAX, "Priority should clamp to MAX (5)")
-	assert_eq(BuildingState.get_priority_name(farm.work_priority), "Urgent (5)", "Priority 5 name is Urgent (5)")
+	assert_eq(BuildingState.get_priority_name(farm.work_priority), "Urgent", "Priority 5 name is Urgent")
 	
 	world.set_building_priority(farm, -5)
 	assert_eq(farm.work_priority, BuildingState.PRIORITY_MIN, "Priority should clamp to MIN (1)")
-	assert_eq(BuildingState.get_priority_name(farm.work_priority), "Low (1)", "Priority 1 name is Low (1)")
+	assert_eq(BuildingState.get_priority_name(farm.work_priority), "Low", "Priority 1 name is Low")
 	
 	world.set_building_priority(farm, 4)
-	assert_eq(BuildingState.get_priority_name(farm.work_priority), "High (4)", "Priority 4 name is High (4)")
+	assert_eq(BuildingState.get_priority_name(farm.work_priority), "High", "Priority 4 name is High")
 	
 	world.set_building_priority(farm, 2)
-	assert_eq(BuildingState.get_priority_name(farm.work_priority), "Below Normal (2)", "Priority 2 name is Below Normal (2)")
+	assert_eq(BuildingState.get_priority_name(farm.work_priority), "Below Normal", "Priority 2 name is Below Normal")
 	
 	print("✓ Test 5: Workplace priority scale and deterministic order PASSED")
 

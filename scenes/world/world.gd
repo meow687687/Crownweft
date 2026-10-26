@@ -314,7 +314,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		if mouse_screen.y < 104.0 or mouse_screen.y > (screen_size.y - 142.0):
 			return
 		if ui != null and ui.panel_workforce != null and ui.panel_workforce.visible:
-			var wf_rect := Rect2(screen_size * 0.5 - Vector2(330, 230), Vector2(660, 460))
+			var wf_rect := Rect2(screen_size * 0.5 - Vector2(330, 225), Vector2(660, 440))
 			if wf_rect.has_point(mouse_screen):
 				return
 		if ui != null and ui.panel_inspector != null and ui.panel_inspector.visible and mouse_screen.x > (screen_size.x - 350.0):
