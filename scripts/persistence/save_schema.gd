@@ -69,6 +69,20 @@ static func serialize(
 			"health": b.health,
 			"max_health": b.max_health,
 			"is_destroyed": b.is_destroyed,
+			"status": int(b.status),
+			"construction_progress": b.construction_progress,
+			"construction_ticks": b.construction_ticks,
+			"construction_required_ticks": b.construction_required_ticks,
+			"construction_cost": b.construction_cost.duplicate(),
+			"construction_block_reason": str(b.construction_block_reason),
+			"construction_inventory": {
+				"owner_id": b.construction_inventory.owner_id,
+				"capacity": b.construction_inventory.capacity,
+				"quantities": b.construction_inventory.quantities.duplicate(),
+				"reserved_out": b.construction_inventory.reserved_out.duplicate(),
+				"reserved_in": b.construction_inventory.reserved_in.duplicate(),
+				"accepted": b.construction_inventory.accepted_resources
+			} if b.construction_inventory != null else null,
 			"inventory": {
 				"capacity": b.inventory.capacity,
 				"quantities": b.inventory.quantities.duplicate(),
@@ -206,6 +220,28 @@ static func deserialize(data: Dictionary) -> Dictionary:
 		b.health = int(b_dict.get("health", 100))
 		b.max_health = int(b_dict.get("max_health", 100))
 		b.is_destroyed = bool(b_dict.get("is_destroyed", false))
+		b.status = b_dict.get("status", BuildingState.Status.ACTIVE) as BuildingState.Status
+		b.construction_progress = float(b_dict.get("construction_progress", 1.0))
+		b.construction_ticks = int(b_dict.get("construction_ticks", 0))
+		b.construction_required_ticks = int(b_dict.get("construction_required_ticks", 10))
+		b.construction_block_reason = StringName(b_dict.get("construction_block_reason", ""))
+		
+		var saved_cost: Dictionary = b_dict.get("construction_cost", {})
+		for cost_k in saved_cost:
+			b.construction_cost[StringName(cost_k)] = int(saved_cost[cost_k])
+			
+		var c_inv_data = b_dict.get("construction_inventory", null)
+		if c_inv_data != null:
+			var c_owner_id: int = int(c_inv_data.get("owner_id", b.entity_id + 50000))
+			var c_cap: int = int(c_inv_data.get("capacity", 50))
+			var c_accepted: Array = c_inv_data.get("accepted", [])
+			b.construction_inventory = Inventory.new(c_owner_id, c_cap, c_accepted)
+			for res_key in c_inv_data.get("quantities", {}):
+				b.construction_inventory.quantities[StringName(res_key)] = int(c_inv_data["quantities"][res_key])
+			for res_key in c_inv_data.get("reserved_out", {}):
+				b.construction_inventory.reserved_out[StringName(res_key)] = int(c_inv_data["reserved_out"][res_key])
+			for res_key in c_inv_data.get("reserved_in", {}):
+				b.construction_inventory.reserved_in[StringName(res_key)] = int(c_inv_data["reserved_in"][res_key])
 		
 		# Restore inventory quantities & reservations
 		var inv_data: Dictionary = b_dict["inventory"]

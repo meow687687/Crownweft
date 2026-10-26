@@ -168,21 +168,45 @@ func _draw_buildings() -> void:
 		var b_size: Vector2 = Vector2(footprint.x * TILE_SIZE, footprint.y * TILE_SIZE)
 		var b_rect: Rect2 = Rect2(b_pos, b_size)
 		var texture: Texture2D = _building_texture(building.definition_id)
-		if texture != null:
-			draw_texture_rect(texture, b_rect, false)
+		
+		if building.is_under_construction():
+			# Foundation / earth floor
+			draw_rect(b_rect, Color(0.24, 0.21, 0.18, 0.85))
+			if texture != null:
+				draw_texture_rect(texture, b_rect, false, Color(1.0, 1.0, 1.0, 0.35))
+			# Scaffolding cross-beams
+			draw_line(b_pos, b_pos + b_size, Color(0.85, 0.7, 0.25, 0.45), 1.0)
+			draw_line(Vector2(b_pos.x, b_pos.y + b_size.y), Vector2(b_pos.x + b_size.x, b_pos.y), Color(0.85, 0.7, 0.25, 0.45), 1.0)
+			draw_rect(b_rect, Color(0.9, 0.75, 0.2, 0.85), false, 1.5)
+			
+			# Construction progress bar at bottom of footprint
+			var bar_w: float = b_size.x - 4.0
+			var bar_pos: Vector2 = b_pos + Vector2(2.0, b_size.y - 5.0)
+			draw_rect(Rect2(bar_pos, Vector2(bar_w, 3.0)), Color(0.12, 0.12, 0.14, 0.9))
+			if building.construction_progress > 0.0:
+				draw_rect(Rect2(bar_pos, Vector2(bar_w * building.construction_progress, 3.0)), Color(0.95, 0.78, 0.24))
 		else:
-			# Safe fallback for future building definitions without a sprite yet.
-			var base_col: Color = def_data.get("color", Color.WHITE)
-			draw_rect(Rect2(b_pos + Vector2(2, 2), b_size), Color(0, 0, 0, 0.3))
-			draw_rect(b_rect, base_col)
-			draw_rect(b_rect, Color(0.15, 0.15, 0.18), false, 1.0)
+			if texture != null:
+				draw_texture_rect(texture, b_rect, false)
+			else:
+				# Safe fallback for future building definitions without a sprite yet.
+				var base_col: Color = def_data.get("color", Color.WHITE)
+				draw_rect(Rect2(b_pos + Vector2(2, 2), b_size), Color(0, 0, 0, 0.3))
+				draw_rect(b_rect, base_col)
+				draw_rect(b_rect, Color(0.15, 0.15, 0.18), false, 1.0)
 
 		if building == selected_building:
 			draw_rect(b_rect.grow(2.0), Color(1.0, 0.82, 0.28), false, 1.0)
-		if building.current_block_reason != &"":
-			draw_rect(Rect2(b_pos + Vector2(b_size.x - 6.0, 2.0), Vector2(4, 4)), Color("#f06c5e"))
-		elif building.assigned_workers > 0 and def_data.has("recipe"):
-			draw_rect(Rect2(b_pos + Vector2(b_size.x - 6.0, 2.0), Vector2(3, 3)), Color("#b8e078"))
+		if building.is_under_construction():
+			if building.construction_block_reason != &"":
+				draw_rect(Rect2(b_pos + Vector2(b_size.x - 6.0, 2.0), Vector2(4, 4)), Color("#e8a838"))
+			elif building.status == BuildingState.Status.UNDER_CONSTRUCTION:
+				draw_rect(Rect2(b_pos + Vector2(b_size.x - 6.0, 2.0), Vector2(4, 4)), Color("#7bd389"))
+		else:
+			if building.current_block_reason != &"":
+				draw_rect(Rect2(b_pos + Vector2(b_size.x - 6.0, 2.0), Vector2(4, 4)), Color("#f06c5e"))
+			elif building.assigned_workers > 0 and def_data.has("recipe"):
+				draw_rect(Rect2(b_pos + Vector2(b_size.x - 6.0, 2.0), Vector2(3, 3)), Color("#b8e078"))
 		if building.health < building.max_health:
 			draw_rect(Rect2(b_pos + Vector2(2, -3), Vector2(b_size.x - 4, 2)), Color("#2b2925"))
 			draw_rect(Rect2(b_pos + Vector2(2, -3), Vector2((b_size.x - 4) * float(building.health) / maxf(1.0, float(building.max_health)), 2)), Color("#bc5949"))

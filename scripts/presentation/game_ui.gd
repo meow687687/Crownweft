@@ -399,6 +399,60 @@ func show_building_details(building: BuildingState, def_info: Dictionary, worker
 		return
 		
 	panel_inspector.visible = true
+	
+	if building.is_under_construction():
+		label_inspector_title.text = "%s (Construction Site)  |  HP %d/%d" % [
+			str(def_info.get("display_name", str(building.definition_id))),
+			building.health,
+			building.max_health
+		]
+		
+		# Construction status and missing materials explanation
+		if building.status == BuildingState.Status.PLANNED:
+			var missing_dict: Dictionary = building.get_outstanding_materials()
+			var missing_str: String = ""
+			for k in missing_dict:
+				if missing_dict[k] > 0:
+					missing_str += "%s: %d " % [str(k).capitalize(), missing_dict[k]]
+			if missing_str == "":
+				label_inspector_status.text = "STATUS: PLANNED — MATERIALS READY"
+				label_inspector_status.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
+			else:
+				label_inspector_status.text = "STATUS: PLANNED — WAITING FOR %s" % missing_str.strip_edges()
+				label_inspector_status.add_theme_color_override("font_color", Color("#e8a838"))
+		elif building.status == BuildingState.Status.UNDER_CONSTRUCTION:
+			if building.construction_block_reason == &"NO_BUILDERS":
+				label_inspector_status.text = "STATUS: WAITING FOR BUILDERS TO ARRIVE"
+				label_inspector_status.add_theme_color_override("font_color", Color.ORANGE)
+			else:
+				label_inspector_status.text = "STATUS: UNDER CONSTRUCTION (%d%%)" % int(roundf(building.construction_progress * 100.0))
+				label_inspector_status.add_theme_color_override("font_color", Color("#e8b839"))
+		else:
+			label_inspector_status.text = "STATUS: %s" % str(building.status)
+			label_inspector_status.add_theme_color_override("font_color", Color.WHITE)
+			
+		# Construction progress bar
+		progress_inspector.visible = true
+		progress_inspector.max_value = 100
+		progress_inspector.value = int(roundf(building.construction_progress * 100.0))
+		
+		# Builders
+		if workers_present >= 0:
+			label_inspector_workers.text = "Builders: %d assigned / %d present / 3 slots" % [building.assigned_workers, workers_present]
+		else:
+			label_inspector_workers.text = "Builders: %d assigned / 3 slots" % building.assigned_workers
+			
+		# Material requirements and deliveries
+		var inv_text: String = "Construction Materials:\n"
+		for res_id in building.construction_cost:
+			var req: int = building.construction_cost[res_id]
+			var deliv: int = building.get_delivered_materials().get(res_id, 0)
+			inv_text += "  %s: %d / %d (Delivered)\n" % [str(res_id).capitalize(), deliv, req]
+		label_inspector_inv.text = inv_text
+		if box_recruitment != null:
+			box_recruitment.visible = false
+		return
+
 	label_inspector_title.text = "%s  |  HP %d/%d" % [
 		str(def_info.get("display_name", str(building.definition_id))),
 		building.health,

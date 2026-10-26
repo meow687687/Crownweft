@@ -10,6 +10,7 @@ var pathfinding: PathfindingService = null
 var job_board: JobBoard = null
 var logistics: LogisticsSystem = null
 var production: ProductionSystem = null
+var construction: ConstructionSystem = null
 var needs: NeedsSystem = null
 var combat: CombatSystem = null
 var economy: EconomyState = null
@@ -45,6 +46,8 @@ func _init_simulation() -> void:
 	job_board = JobBoard.new()
 	logistics = LogisticsSystem.new(job_board)
 	production = ProductionSystem.new()
+	construction = ConstructionSystem.new()
+	construction.building_completed.connect(_on_building_completed)
 	needs = NeedsSystem.new()
 	combat = CombatSystem.new()
 	economy = EconomyState.new()
@@ -156,11 +159,12 @@ func _cleanup_destroyed_buildings() -> void:
 				citizen.move_state = CitizenState.MoveState.IDLE
 				citizen.target_tile = citizen.position_tile
 		var inv_id: int = building.inventory.owner_id
+		var const_inv_id: int = building.construction_inventory.owner_id if building.construction_inventory != null else -1
 		for job: HaulJob in job_board.jobs.values():
 			if job.status in [HaulJob.Status.DELIVERED, HaulJob.Status.CANCELLED]:
 				continue
-			var touches_source: bool = job.source_inventory_id == inv_id
-			var touches_dest: bool = job.destination_inventory_id == inv_id
+			var touches_source: bool = (job.source_inventory_id == inv_id or (const_inv_id > 0 and job.source_inventory_id == const_inv_id))
+			var touches_dest: bool = (job.destination_inventory_id == inv_id or (const_inv_id > 0 and job.destination_inventory_id == const_inv_id))
 			if not touches_source and not touches_dest:
 				continue
 			var source_inv: Inventory = _find_inventory_by_id(job.source_inventory_id)
@@ -219,6 +223,8 @@ func _find_inventory_by_id(inventory_id: int) -> Inventory:
 	for building: BuildingState in buildings:
 		if building.inventory.owner_id == inventory_id:
 			return building.inventory
+		if building.construction_inventory != null and building.construction_inventory.owner_id == inventory_id:
+			return building.construction_inventory
 	return null
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -297,7 +303,7 @@ func _on_worker_assignment_changed(delta: int) -> void:
 		return
 	var defs: Dictionary = BuildingCatalog.get_all_defs()
 	var def_info: Dictionary = defs.get(selected_building.definition_id, {})
-	var max_slots: int = int(def_info.get("worker_slots", 0))
+	var max_slots: int = 3 if selected_building.is_under_construction() else int(def_info.get("worker_slots", 0))
 	if delta > 0:
 		var available: CitizenState = null
 		for citizen: CitizenState in citizens:
@@ -305,14 +311,14 @@ func _on_worker_assignment_changed(delta: int) -> void:
 				available = citizen
 				break
 		if selected_building.assigned_workers >= max_slots:
-			ui.show_toast("This building has no open worker slots", true)
+			ui.show_toast("This building has no open %s slots" % ("builder" if selected_building.is_under_construction() else "worker"), true)
 			return
 		if available == null:
 			ui.show_toast("No unassigned workers available", true)
 			return
 		selected_building.assigned_workers += 1
 		available.workplace_id = selected_building.entity_id
-		available.role_id = _worker_role_for_building(selected_building.definition_id)
+		available.role_id = &"builder" if selected_building.is_under_construction() else _worker_role_for_building(selected_building.definition_id)
 		available.path.clear()
 		available.move_state = CitizenState.MoveState.MOVING
 	else:
@@ -325,7 +331,7 @@ func _on_worker_assignment_changed(delta: int) -> void:
 				citizen.target_tile = citizen.position_tile
 				selected_building.assigned_workers = maxi(0, selected_building.assigned_workers - 1)
 				break
-	ui.show_building_details(selected_building, def_info)
+	ui.show_building_details(selected_building, def_info, _count_workers_at_building(selected_building))
 	renderer.queue_redraw()
 
 func _worker_role_for_building(building_id: StringName) -> StringName:
@@ -404,16 +410,7 @@ func can_place_building_at(b_id: StringName, coord: Vector2i) -> Dictionary:
 		if not deposit_found:
 			return {"ok": false, "reason": "Requires a nearby %s deposit" % ("forest" if required_deposit == &"trees" else "stone" )}
 
-	# Construction costs are paid from the Town Hall's physical construction stockpile.
-	# Producers replenish it through explicit hauling jobs.
-	var main_inv: Inventory = buildings[0].inventory if not buildings.is_empty() else null
-	if main_inv != null:
-		var cost: Dictionary = def_info.get("cost", {})
-		for res_id in cost:
-			var req: int = cost[res_id]
-			if main_inv.get_available_outgoing(res_id) < req:
-				return {"ok": false, "reason": "Insufficient %s! (Need %d, have %d)" % [str(res_id).capitalize(), req, main_inv.get_available_outgoing(res_id)]}
-				
+	# Sites can be placed even if materials are pending; haulers will deliver them.
 	return {"ok": true, "reason": "Ready to build"}
 
 func build_road(coord: Vector2i) -> void:
@@ -432,21 +429,36 @@ func place_building(b_id: StringName, coord: Vector2i, bypass_cost: bool = false
 	var defs: Dictionary = BuildingCatalog.get_all_defs()
 	var def_info: Dictionary = defs.get(b_id, {})
 	var footprint: Vector2i = def_info.get("footprint", Vector2i(2, 2))
+	var cost: Dictionary = def_info.get("cost", {}).duplicate()
+	var build_time: int = int(def_info.get("build_time", 8))
 	
-	# Deduct construction cost from Town Hall / nearest storehouse
-	if not bypass_cost:
-		var cost: Dictionary = def_info.get("cost", {})
-		if not _try_deduct_cost(cost):
-			return null
-			
-	# Instantiate building
-	var b_state: BuildingState = BuildingState.new(
-		next_entity_id,
-		b_id,
-		def_info.get("capacity", 30),
-		def_info.get("accepted", [])
-	)
-	next_entity_id += 1
+	var b_state: BuildingState = null
+	if bypass_cost or cost.is_empty():
+		b_state = BuildingState.new(
+			next_entity_id,
+			b_id,
+			def_info.get("capacity", 30),
+			def_info.get("accepted", [])
+		)
+		b_state.status = BuildingState.Status.ACTIVE
+		b_state.construction_progress = 1.0
+		b_state.construction_ticks = build_time
+		b_state.construction_required_ticks = build_time
+		next_entity_id += 1
+	else:
+		var const_inv_id: int = next_entity_id + 1
+		b_state = construction.create_construction_site(
+			next_entity_id,
+			b_id,
+			coord,
+			cost,
+			build_time,
+			const_inv_id,
+			def_info.get("capacity", 30),
+			def_info.get("accepted", [])
+		)
+		next_entity_id += 2
+
 	b_state.tile_origin = coord
 	b_state.assigned_workers = 0 # Workers must come from the finite citizen pool.
 	b_state.max_health = int(def_info.get("health", 100))
@@ -465,6 +477,84 @@ func place_building(b_id: StringName, coord: Vector2i, bypass_cost: bool = false
 	buildings.append(b_state)
 	renderer.queue_redraw()
 	return b_state
+
+func _on_building_completed(building: BuildingState) -> void:
+	var defs: Dictionary = BuildingCatalog.get_all_defs()
+	var def_info: Dictionary = defs.get(building.definition_id, {})
+	var max_slots: int = int(def_info.get("worker_slots", 0))
+	
+	# Transition assigned builders to permanent role up to worker_slots, unassign excess
+	var converted: int = 0
+	for citizen: CitizenState in citizens:
+		if citizen.workplace_id == building.entity_id:
+			if converted < max_slots:
+				citizen.role_id = _worker_role_for_building(building.definition_id)
+				converted += 1
+			else:
+				citizen.workplace_id = 0
+				citizen.role_id = &"unassigned"
+				citizen.path.clear()
+				citizen.move_state = CitizenState.MoveState.IDLE
+				citizen.target_tile = citizen.position_tile
+	building.assigned_workers = converted
+	
+	# Ensure pathfinding and collision flags are reaffirmed
+	var footprint: Vector2i = def_info.get("footprint", Vector2i(2, 2))
+	for dy in range(footprint.y):
+		for dx in range(footprint.x):
+			var c: Vector2i = building.tile_origin + Vector2i(dx, dy)
+			var tile: WorldTile = world_state.get_tile(c)
+			if tile != null:
+				tile.is_buildable = false
+				tile.is_walkable = false
+				tile.building_id = building.entity_id
+				pathfinding.set_solid(c, true)
+				
+	if selected_building == building:
+		ui.show_building_details(building, def_info, _count_workers_at_building(building))
+	renderer.queue_redraw()
+	ui.show_toast("%s completed and active!" % def_info.get("display_name", str(building.definition_id)), false)
+
+func cancel_construction_site(building: BuildingState) -> void:
+	if building == null or not building.is_under_construction():
+		return
+	var main_inv: Inventory = buildings[0].inventory if not buildings.is_empty() else null
+	var inv_map: Dictionary = {}
+	for b: BuildingState in buildings:
+		inv_map[b.inventory.owner_id] = b.inventory
+		if b.construction_inventory != null:
+			inv_map[b.construction_inventory.owner_id] = b.construction_inventory
+	
+	var refunded: Dictionary = construction.cancel_construction_site(building, job_board, main_inv, inv_map)
+	
+	# Release any assigned builders
+	for citizen: CitizenState in citizens:
+		if citizen.workplace_id == building.entity_id:
+			citizen.workplace_id = 0
+			citizen.role_id = &"unassigned"
+			citizen.path.clear()
+			citizen.move_state = CitizenState.MoveState.IDLE
+			citizen.target_tile = citizen.position_tile
+			
+	# Clear world tiles and pathfinding
+	var defs: Dictionary = BuildingCatalog.get_all_defs()
+	var footprint: Vector2i = defs.get(building.definition_id, {}).get("footprint", Vector2i(2, 2))
+	for dy in range(footprint.y):
+		for dx in range(footprint.x):
+			var coord: Vector2i = building.tile_origin + Vector2i(dx, dy)
+			var tile: WorldTile = world_state.get_tile(coord)
+			if tile != null and tile.building_id == building.entity_id:
+				tile.building_id = 0
+				tile._update_flags()
+				pathfinding.set_solid(coord, not tile.is_walkable)
+				
+	buildings.erase(building)
+	if selected_building == building:
+		selected_building = null
+		ui.show_building_details(null, {})
+	renderer.buildings = buildings
+	renderer.queue_redraw()
+	ui.show_toast("Construction site cancelled", false)
 
 func _try_deduct_cost(cost: Dictionary) -> bool:
 	if cost.is_empty():
@@ -529,15 +619,35 @@ func _simulation_tick() -> void:
 	for building: BuildingState in buildings:
 		inv_map[building.inventory.owner_id] = building.inventory
 		building_by_inv[building.inventory.owner_id] = building
+		if building.construction_inventory != null:
+			inv_map[building.construction_inventory.owner_id] = building.construction_inventory
+			building_by_inv[building.construction_inventory.owner_id] = building
 
-	# Assigned workers must physically reach their worksite before production can advance.
+	# Auto-route unassigned workers to sites that have all materials ready for construction
+	for building: BuildingState in buildings:
+		if building.is_under_construction() and building.has_all_construction_materials() and building.assigned_workers == 0:
+			for citizen: CitizenState in citizens:
+				if citizen.role_id == &"unassigned" and citizen.workplace_id == 0:
+					citizen.workplace_id = building.entity_id
+					citizen.role_id = &"builder"
+					citizen.path.clear()
+					citizen.move_state = CitizenState.MoveState.MOVING
+					building.assigned_workers += 1
+					if building.assigned_workers >= 2:
+						break
+
+	# Assigned workers must physically reach their worksite before production/construction can advance.
 	_update_worker_movement()
 
-	# 1. Production. Resource buildings consume finite deposits from the actual world.
+	# 1. Production and Construction.
 	for building: BuildingState in buildings:
-		var recipe: RecipeDef = defs.get(building.definition_id, {}).get("recipe", null)
-		if recipe != null:
-			production.tick_building(building, recipe, world_state, _count_workers_at_building(building))
+		if building.is_under_construction():
+			var workers_present: int = _count_workers_at_building(building)
+			construction.tick_building(building, workers_present, current_tick)
+		elif building.status == BuildingState.Status.ACTIVE:
+			var recipe: RecipeDef = defs.get(building.definition_id, {}).get("recipe", null)
+			if recipe != null:
+				production.tick_building(building, recipe, world_state, _count_workers_at_building(building))
 
 	# 2. Needs are supplied only by inventories the citizen can physically reach.
 	var food_inventories: Array[Inventory] = []
@@ -729,6 +839,27 @@ func _generate_logistics_demand() -> void:
 		var stone_inbound: int = town_hall.inventory.get_quantity(&"stone") + town_hall.inventory.get_reserved_in(&"stone")
 		if stone_inbound < 20:
 			logistics.check_and_create_demand(quarry_b, town_hall, &"stone", 4, current_tick, 2)
+
+	# Construction site supply: haul required materials from town storage into site's construction inventory
+	for b: BuildingState in buildings:
+		if not b.is_under_construction():
+			continue
+		var needed_map: Dictionary = b.get_unreserved_materials_needed()
+		for res_id: StringName in needed_map:
+			var needed_qty: int = needed_map[res_id]
+			if needed_qty <= 0:
+				continue
+			var source_building: BuildingState = null
+			if town_hall != null and town_hall.status == BuildingState.Status.ACTIVE and town_hall.inventory.get_available_outgoing(res_id) > 0:
+				source_building = town_hall
+			elif storehouse_b != null and storehouse_b.status == BuildingState.Status.ACTIVE and storehouse_b.inventory.get_available_outgoing(res_id) > 0:
+				source_building = storehouse_b
+			if source_building != null:
+				var available: int = source_building.inventory.get_available_outgoing(res_id)
+				var free_cap: int = b.construction_inventory.get_free_capacity()
+				var transfer: int = mini(needed_qty, mini(available, mini(4, free_cap)))
+				if transfer > 0:
+					job_board.create_job(res_id, transfer, source_building.inventory, b.construction_inventory, 4, current_tick)
 
 func _update_ui_state(needs_report: Dictionary) -> void:
 	var total_coin: int = 0
