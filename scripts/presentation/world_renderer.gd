@@ -211,6 +211,25 @@ func _draw_buildings() -> void:
 			draw_rect(Rect2(b_pos + Vector2(2, -3), Vector2(b_size.x - 4, 2)), Color("#2b2925"))
 			draw_rect(Rect2(b_pos + Vector2(2, -3), Vector2((b_size.x - 4) * float(building.health) / maxf(1.0, float(building.max_health)), 2)), Color("#bc5949"))
 
+		# Draw entrance / doorway threshold marker
+		if building.entrance_offset != Vector2i.ZERO:
+			var door_tile: Vector2i = building.get_doorway_world_tile()
+			var door_pos: Vector2 = Vector2(door_tile.x * TILE_SIZE, door_tile.y * TILE_SIZE)
+			draw_rect(Rect2(door_pos + Vector2(3, TILE_SIZE - 3), Vector2(TILE_SIZE - 6, 2)), Color(0.3, 0.2, 0.1, 0.8))
+			if building == selected_building:
+				var ent_tile: Vector2i = building.get_entrance_tile()
+				var ent_pos: Vector2 = Vector2(ent_tile.x * TILE_SIZE, ent_tile.y * TILE_SIZE)
+				var wt: WorldTile = world_state.get_tile(ent_tile) if world_state != null else null
+				var is_blocked: bool = (wt == null or not wt.is_walkable or wt.terrain_id in [&"water", &"rock"])
+				if is_blocked:
+					draw_rect(Rect2(ent_pos, Vector2(TILE_SIZE, TILE_SIZE)), Color(1.0, 0.2, 0.2, 0.35))
+					draw_rect(Rect2(ent_pos, Vector2(TILE_SIZE, TILE_SIZE)), Color(1.0, 0.2, 0.2, 0.9), false, 1.5)
+					draw_line(ent_pos + Vector2(2, 2), ent_pos + Vector2(TILE_SIZE - 2, TILE_SIZE - 2), Color.RED, 1.5)
+					draw_line(ent_pos + Vector2(TILE_SIZE - 2, 2), ent_pos + Vector2(2, TILE_SIZE - 2), Color.RED, 1.5)
+				else:
+					draw_rect(Rect2(ent_pos, Vector2(TILE_SIZE, TILE_SIZE)), Color(0.2, 0.7, 1.0, 0.25))
+					draw_rect(Rect2(ent_pos, Vector2(TILE_SIZE, TILE_SIZE)), Color(0.2, 0.8, 1.0, 0.8), false, 1.5)
+
 func _building_texture(building_id: StringName) -> Texture2D:
 	match building_id:
 		&"town_hall": return TEX_TOWN_HALL
@@ -243,6 +262,16 @@ func _draw_build_ghost() -> void:
 		for dx in range(footprint.x):
 			var sub_pos: Vector2 = ghost_pos + Vector2(dx * TILE_SIZE, dy * TILE_SIZE)
 			draw_rect(Rect2(sub_pos, Vector2(TILE_SIZE, TILE_SIZE)), outline_color, false, 0.8)
+
+	# Draw entrance / doorway indicator in placement preview
+	var entrance_offset: Vector2i = def_info.get("entrance_offset", Vector2i.ZERO)
+	if entrance_offset != Vector2i.ZERO:
+		var ent_world_tile: Vector2i = hover_tile + entrance_offset
+		var ent_pos: Vector2 = Vector2(ent_world_tile.x * TILE_SIZE, ent_world_tile.y * TILE_SIZE)
+		var ent_rect: Rect2 = Rect2(ent_pos, Vector2(TILE_SIZE, TILE_SIZE))
+		var ent_color: Color = Color(0.2, 0.8, 1.0, 0.6) if is_hover_valid else Color(1.0, 0.2, 0.2, 0.6)
+		draw_rect(ent_rect, Color(ent_color.r, ent_color.g, ent_color.b, 0.2))
+		draw_rect(ent_rect, ent_color, false, 1.5)
 
 func _draw_citizens() -> void:
 	for citizen: CitizenState in citizens:

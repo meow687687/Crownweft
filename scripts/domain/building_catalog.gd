@@ -14,6 +14,9 @@ static func get_all_defs() -> Dictionary:
 		"capacity": 150,
 		"accepted": [&"coin", &"bread", &"grain", &"timber", &"stone"],
 		"footprint": Vector2i(3, 3),
+		"entrance_offset": Vector2i(1, 3),
+		"doorway_tile": Vector2i(1, 2),
+		"staging_offsets": [Vector2i(1, 3), Vector2i(0, 3), Vector2i(2, 3), Vector2i(1, 4)],
 		"build_time": 12,
 		"color": Color(0.85, 0.75, 0.45) # Gold-tan
 	}
@@ -29,6 +32,9 @@ static func get_all_defs() -> Dictionary:
 		"housing_capacity": 5,
 		"accepted": [&"bread"],
 		"footprint": Vector2i(2, 2),
+		"entrance_offset": Vector2i(1, 2),
+		"doorway_tile": Vector2i(1, 1),
+		"staging_offsets": [Vector2i(1, 2), Vector2i(0, 2), Vector2i(1, 3)],
 		"build_time": 6,
 		"color": Color(0.7, 0.5, 0.3) # Wood brown
 	}
@@ -44,6 +50,9 @@ static func get_all_defs() -> Dictionary:
 		"accepted": [&"grain"],
 		"recipe": RecipeDef.new(&"grow_grain", {}, {&"grain": 3}, 1, 6),
 		"footprint": Vector2i(3, 3),
+		"entrance_offset": Vector2i(1, 3),
+		"doorway_tile": Vector2i(1, 2),
+		"staging_offsets": [Vector2i(1, 3), Vector2i(0, 3), Vector2i(2, 3), Vector2i(1, 4)],
 		"build_time": 8,
 		"color": Color(0.9, 0.85, 0.2) # Golden yellow
 	}
@@ -60,6 +69,9 @@ static func get_all_defs() -> Dictionary:
 		"recipe": RecipeDef.new(&"chop_wood", {}, {&"timber": 2}, 1, 4),
 		"harvest_deposit": &"trees",
 		"footprint": Vector2i(2, 2),
+		"entrance_offset": Vector2i(1, 2),
+		"doorway_tile": Vector2i(1, 1),
+		"staging_offsets": [Vector2i(1, 2), Vector2i(0, 2), Vector2i(1, 3)],
 		"build_time": 6,
 		"color": Color(0.3, 0.6, 0.25) # Forest green
 	}
@@ -76,6 +88,9 @@ static func get_all_defs() -> Dictionary:
 		"recipe": RecipeDef.new(&"mine_stone", {}, {&"stone": 2}, 1, 5),
 		"harvest_deposit": &"stone_deposit",
 		"footprint": Vector2i(2, 2),
+		"entrance_offset": Vector2i(1, 2),
+		"doorway_tile": Vector2i(1, 1),
+		"staging_offsets": [Vector2i(1, 2), Vector2i(0, 2), Vector2i(1, 3)],
 		"build_time": 8,
 		"color": Color(0.55, 0.55, 0.6) # Slate grey
 	}
@@ -91,6 +106,9 @@ static func get_all_defs() -> Dictionary:
 		"accepted": [&"grain", &"bread"],
 		"recipe": RecipeDef.new(&"bake_bread", {&"grain": 2}, {&"bread": 2}, 1, 4),
 		"footprint": Vector2i(2, 2),
+		"entrance_offset": Vector2i(1, 2),
+		"doorway_tile": Vector2i(1, 1),
+		"staging_offsets": [Vector2i(1, 2), Vector2i(0, 2), Vector2i(1, 3)],
 		"build_time": 8,
 		"color": Color(0.85, 0.5, 0.3) # Brick orange
 	}
@@ -105,6 +123,9 @@ static func get_all_defs() -> Dictionary:
 		"capacity": 150,
 		"accepted": [&"grain", &"bread", &"timber", &"stone", &"coin"],
 		"footprint": Vector2i(3, 2),
+		"entrance_offset": Vector2i(1, 2),
+		"doorway_tile": Vector2i(1, 1),
+		"staging_offsets": [Vector2i(1, 2), Vector2i(0, 2), Vector2i(2, 2), Vector2i(1, 3)],
 		"build_time": 10,
 		"color": Color(0.4, 0.45, 0.7) # Deep blue-grey
 	}
@@ -119,6 +140,9 @@ static func get_all_defs() -> Dictionary:
 		"capacity": 40,
 		"accepted": [&"bread"],
 		"footprint": Vector2i(3, 3),
+		"entrance_offset": Vector2i(1, 3),
+		"doorway_tile": Vector2i(1, 2),
+		"staging_offsets": [Vector2i(1, 3), Vector2i(0, 3), Vector2i(2, 3), Vector2i(1, 4)],
 		"build_time": 10,
 		"color": Color(0.7, 0.2, 0.2) # Crimson
 	}
@@ -145,6 +169,9 @@ static func get_all_defs() -> Dictionary:
 		"capacity": 500,
 		"accepted": [], # Accepts all resources
 		"footprint": Vector2i(1, 1),
+		"entrance_offset": Vector2i(0, 1),
+		"doorway_tile": Vector2i(0, 0),
+		"staging_offsets": [Vector2i(0, 1), Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, -1)],
 		"build_time": 0,
 		"color": Color(0.7, 0.6, 0.4) # Burlap tan
 	}

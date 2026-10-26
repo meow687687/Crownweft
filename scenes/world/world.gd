@@ -97,6 +97,8 @@ func _init_simulation() -> void:
 		renderer.queue_redraw()
 
 func _setup_signals() -> void:
+	if ui == null:
+		return
 	ui.speed_changed.connect(func(speed: float):
 		sim_speed_multiplier = speed
 	)
@@ -386,6 +388,22 @@ func can_place_building_at(b_id: StringName, coord: Vector2i) -> Dictionary:
 			if not tile.is_buildable:
 				return {"ok": false, "reason": "Tile is occupied or blocked"}
 				
+	# Entrance validation
+	var entrance_offset: Vector2i = def_info.get("entrance_offset", Vector2i.ZERO)
+	if entrance_offset != Vector2i.ZERO:
+		var ent_tile: Vector2i = coord + entrance_offset
+		if not world_state.is_valid_coord(ent_tile):
+			return {"ok": false, "reason": "Entrance is outside map boundary"}
+		var ent_world_tile: WorldTile = world_state.get_tile(ent_tile)
+		if ent_world_tile == null:
+			return {"ok": false, "reason": "Invalid entrance tile"}
+		if ent_world_tile.terrain_id == &"water":
+			return {"ok": false, "reason": "Entrance blocked by water"}
+		if ent_world_tile.terrain_id == &"rock":
+			return {"ok": false, "reason": "Entrance blocked by rocky terrain"}
+		if not ent_world_tile.is_walkable:
+			return {"ok": false, "reason": "Entrance is occupied or blocked"}
+
 	# A new footprint must not trap a citizen or be built under a military unit.
 	for citizen: CitizenState in citizens:
 		if Rect2i(coord, footprint).has_point(citizen.position_tile):
@@ -723,6 +741,19 @@ func _simulation_tick() -> void:
 
 func _update_worker_movement() -> void:
 	var defs: Dictionary = BuildingCatalog.get_all_defs()
+	var building_worker_slots: Dictionary = {}
+	
+	# Pre-collect occupied staging tiles of idle workers at their workplace
+	var occupied_by_building: Dictionary = {}
+	for citizen: CitizenState in citizens:
+		if citizen.role_id == &"hauler" or citizen.workplace_id <= 0:
+			continue
+		if citizen.move_state == CitizenState.MoveState.IDLE:
+			var b_id: int = citizen.workplace_id
+			if not occupied_by_building.has(b_id):
+				occupied_by_building[b_id] = []
+			(occupied_by_building[b_id] as Array[Vector2i]).append(citizen.position_tile)
+
 	for citizen: CitizenState in citizens:
 		if citizen.role_id == &"hauler":
 			continue
@@ -742,15 +773,20 @@ func _update_worker_movement() -> void:
 			continue
 
 		var footprint: Vector2i = defs.get(workplace.definition_id, {}).get("footprint", Vector2i.ONE)
+		var slot_idx: int = building_worker_slots.get(workplace.entity_id, 0)
+		building_worker_slots[workplace.entity_id] = slot_idx + 1
+
 		if citizen.move_state == CitizenState.MoveState.IDLE and _is_adjacent_to_building(citizen.position_tile, workplace, footprint):
 			continue
 
-		if not citizen.path.is_empty() and pathfinding.astar_grid.is_point_solid(citizen.path[0]):
-			citizen.path.clear()
+		if not citizen.path.is_empty():
+			if pathfinding.astar_grid.is_point_solid(citizen.path[0]) or pathfinding.astar_grid.is_point_solid(citizen.target_tile):
+				citizen.path.clear()
 
 		if citizen.path.is_empty():
-			var route: Array[Vector2i] = pathfinding.find_path_to_adjacent(
-				citizen.position_tile, workplace.tile_origin, footprint
+			var occupied: Array[Vector2i] = occupied_by_building.get(workplace.entity_id, [])
+			var route: Array[Vector2i] = pathfinding.find_path_to_entrance(
+				citizen.position_tile, workplace, slot_idx, occupied
 			)
 			if route.is_empty():
 				citizen.move_state = CitizenState.MoveState.IDLE
@@ -783,6 +819,8 @@ func _count_workers_at_building(building: BuildingState) -> int:
 	return count
 
 func _is_adjacent_to_building(tile_coord: Vector2i, building: BuildingState, footprint: Vector2i) -> bool:
+	if building != null and building.entrance_offset != Vector2i.ZERO:
+		return building.is_at_entrance_or_staging(tile_coord)
 	var left: int = building.tile_origin.x
 	var top: int = building.tile_origin.y
 	var right: int = left + footprint.x - 1

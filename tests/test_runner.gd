@@ -11,6 +11,7 @@ const SUITES: Array[String] = [
 	"res://tests/unit/test_economy.gd",
 	"res://tests/unit/test_save_load.gd",
 	"res://tests/unit/test_construction.gd",
+	"res://tests/unit/test_entrances.gd",
 	"res://tests/integration/test_simulation_proof.gd",
 	"res://tests/integration/test_military_slice.gd",
 	"res://tests/integration/test_physical_hauling.gd"

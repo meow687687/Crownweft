@@ -93,5 +93,66 @@ func find_path_to_adjacent(
 			best_length = candidate.size()
 	return best_path
 
+func find_path_to_entrance(
+	from_coord: Vector2i,
+	building: BuildingState,
+	preferred_slot: int = 0,
+	occupied_positions: Array[Vector2i] = []
+) -> Array[Vector2i]:
+	if building == null:
+		return []
+		
+	# 1. If building has explicit interaction tiles, evaluate them
+	var candidates: Array[Vector2i] = []
+	var all_staging: Array[Vector2i] = building.get_interaction_tiles()
+	
+	# Start with the preferred slot if within range and not occupied
+	if preferred_slot >= 0 and preferred_slot < all_staging.size():
+		var preferred_tile: Vector2i = all_staging[preferred_slot]
+		if not preferred_tile in occupied_positions:
+			candidates.append(preferred_tile)
+			
+	# Add remaining non-occupied staging tiles
+	for s in all_staging:
+		if not s in candidates and not s in occupied_positions:
+			candidates.append(s)
+			
+	# If all slots are occupied by other workers, allow queuing at the primary/staging tiles
+	if candidates.is_empty():
+		for s in all_staging:
+			if not s in candidates:
+				candidates.append(s)
+
+	# 2. Try to find path to the best reachable candidate
+	var best_path: Array[Vector2i] = []
+	var best_len: int = 999999
+	for candidate: Vector2i in candidates:
+		if not astar_grid.is_in_bounds(candidate.x, candidate.y):
+			continue
+		if astar_grid.is_point_solid(candidate):
+			continue
+		var path_res: Array[Vector2i] = find_path(from_coord, candidate)
+		if not path_res.is_empty() and path_res.size() < best_len:
+			best_path = path_res
+			best_len = path_res.size()
+			if candidate == candidates[0]:
+				break
+
+	if not best_path.is_empty():
+		return best_path
+
+	# 3. Fallback: if building has no valid interaction tiles or all are blocked, fall back to perimeter adjacency
+	var defs: Dictionary = BuildingCatalog.get_all_defs()
+	var footprint: Vector2i = defs.get(building.definition_id, {}).get("footprint", Vector2i(2, 2))
+	return find_path_to_adjacent(from_coord, building.tile_origin, footprint)
+
+func is_entrance_walkable(building: BuildingState) -> bool:
+	if building == null:
+		return false
+	var ent_tile: Vector2i = building.get_entrance_tile()
+	if not astar_grid.is_in_bounds(ent_tile.x, ent_tile.y):
+		return false
+	return not astar_grid.is_point_solid(ent_tile)
+
 func is_reachable(from_coord: Vector2i, to_coord: Vector2i) -> bool:
 	return not find_path(from_coord, to_coord).is_empty()

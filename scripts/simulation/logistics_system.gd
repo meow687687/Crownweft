@@ -226,8 +226,8 @@ func _find_alternate_destination(
 			continue
 		var definition: Dictionary = BuildingCatalog.get_all_defs().get(candidate.definition_id, {})
 		var footprint: Vector2i = definition.get("footprint", Vector2i.ONE)
-		var candidate_path: Array[Vector2i] = pathfinding.find_path_to_adjacent(
-			hauler.current_tile, candidate.tile_origin, footprint
+		var candidate_path: Array[Vector2i] = pathfinding.find_path_to_entrance(
+			hauler.current_tile, candidate
 		)
 		if not candidate_path.is_empty():
 			candidates.append(candidate)
@@ -254,10 +254,8 @@ func _advance_toward(
 		needs_new_path = true
 
 	if needs_new_path:
-		var target_def: Dictionary = BuildingCatalog.get_all_defs().get(target_building.definition_id, {})
-		var footprint: Vector2i = target_def.get("footprint", Vector2i.ONE)
-		var new_path: Array[Vector2i] = pathfinding.find_path_to_adjacent(
-			hauler.current_tile, target_building.tile_origin, footprint
+		var new_path: Array[Vector2i] = pathfinding.find_path_to_entrance(
+			hauler.current_tile, target_building
 		)
 		hauler.clear_path()
 		if new_path.is_empty():

@@ -443,7 +443,8 @@ func show_building_details(building: BuildingState, def_info: Dictionary, worker
 			label_inspector_workers.text = "Builders: %d assigned / 3 slots" % building.assigned_workers
 			
 		# Material requirements and deliveries
-		var inv_text: String = "Construction Materials:\n"
+		var ent: Vector2i = building.get_entrance_tile()
+		var inv_text: String = "Entrance: (%d, %d)\nConstruction Materials:\n" % [ent.x, ent.y]
 		for res_id in building.construction_cost:
 			var req: int = building.construction_cost[res_id]
 			var deliv: int = building.get_delivered_materials().get(res_id, 0)
@@ -505,7 +506,8 @@ func show_building_details(building: BuildingState, def_info: Dictionary, worker
 	# Inventory items
 	var total_stored: int = building.inventory.get_total_quantity()
 	var cap: int = building.inventory.capacity
-	var inv_text: String = "Physical Storage (%d / %d):\n" % [total_stored, cap]
+	var act_ent: Vector2i = building.get_entrance_tile()
+	var inv_text: String = "Entrance: (%d, %d)\nPhysical Storage (%d / %d):\n" % [act_ent.x, act_ent.y, total_stored, cap]
 	if building.inventory.quantities.is_empty():
 		inv_text += "  (Empty)\n"
 	else:
