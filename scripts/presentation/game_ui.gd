@@ -72,6 +72,8 @@ var active_workforce_filter: StringName = &"ALL"
 var filter_buttons: Dictionary = {}
 var active_species_filter: StringName = &"all"
 var species_filter_buttons: Dictionary = {}
+var active_status_filter: StringName = &"all"
+var status_filter_buttons: Dictionary = {}
 var _last_workforce_citizens: Array = []
 var _last_workforce_summary: Dictionary = {}
 var _last_auto_staffing: bool = false
@@ -701,7 +703,8 @@ func show_citizen_details(citizen: CitizenState, workplace: BuildingState = null
 		box_recruitment.visible = false
 
 	var sp_name: String = SpeciesCatalog.get_display_name(citizen.species_id)
-	label_inspector_title.text = "CITIZEN #%d — %s (%s)" % [citizen.id, str(citizen.role_id).capitalize(), sp_name]
+	var st_name: String = SocialClassCatalog.get_display_name(citizen.social_status_id)
+	label_inspector_title.text = "CITIZEN #%d — %s (%s, %s)" % [citizen.id, str(citizen.role_id).capitalize(), sp_name, st_name]
 
 	# Activity / Status explanation
 	if citizen.is_resting:
@@ -784,18 +787,30 @@ func show_citizen_details(citizen: CitizenState, workplace: BuildingState = null
 	var sp_adv: Array = sp_def.get("advantages", [])
 	var sp_dis: Array = sp_def.get("disadvantages", [])
 
+	var st_id: StringName = citizen.social_status_id
+	var st_def: Dictionary = SocialClassCatalog.get_def(st_id)
+	var st_priv: Array = st_def.get("privileges", [])
+	var st_resp: Array = st_def.get("responsibilities", [])
+
 	var text: String = "SPECIES: %s\n" % sp_name
+	text += "SOCIAL STATUS: %s\n" % st_name
 	text += "TRAITS: %s\n" % sp_desc
+	if not st_priv.is_empty():
+		text += "PRIVILEGES: %s\n" % ", ".join(st_priv)
+	if not st_resp.is_empty():
+		text += "RESPONSIBILITIES: %s\n" % ", ".join(st_resp)
+	if citizen.last_status_transition_reason != "":
+		text += "TRANSITION: %s\n" % citizen.last_status_transition_reason.replace("_", " ").capitalize()
 	if not sp_adv.is_empty():
-		text += "ADVANTAGES: %s\n" % ", ".join(sp_adv)
+		text += "SPECIES ADVANTAGES: %s\n" % ", ".join(sp_adv)
 	if not sp_dis.is_empty():
-		text += "DISADVANTAGES: %s\n" % ", ".join(sp_dis)
+		text += "SPECIES DISADVANTAGES: %s\n" % ", ".join(sp_dis)
 	text += "\n"
 	text += "ENERGY: %d / 100\n" % int(citizen.energy)
 	text += "WORKPLACE: %s\n" % wp_name
 	text += "HOME: %s\n" % hm_name
 	text += "FOOD: %s\n\n" % food_str
-	text += "SKILLS (with species modifiers):\n"
+	text += "SKILLS (with species & social modifiers):\n"
 	for s: StringName in CitizenState.SKILL_NAMES:
 		var s_val: int = int(citizen.get_skill(s))
 		var s_fac: float = citizen.get_skill_factor(s)
@@ -893,6 +908,25 @@ func _build_workforce_panel() -> void:
 		species_filter_bar.add_child(btn)
 		species_filter_buttons[sp_key] = btn
 
+	var status_filter_bar := HBoxContainer.new()
+	status_filter_bar.add_theme_constant_override("separation", 3)
+	main_vbox.add_child(status_filter_bar)
+
+	var status_filters: Array[String] = ["ALL ESTATES", "COMMONER", "ARTISAN", "MERCHANT", "SCHOLAR", "CLERGY", "ADMIN", "NOBLE"]
+	for st_f in status_filters:
+		var btn := Button.new()
+		btn.text = st_f
+		btn.custom_minimum_size = Vector2(0, 22)
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn.add_theme_font_size_override("font_size", 9)
+		UITheme.apply_button_style(btn, st_f == "ALL ESTATES")
+		var st_key: StringName = &"all"
+		if not st_f.begins_with("ALL"):
+			st_key = &"administrator" if st_f == "ADMIN" else StringName(st_f.to_lower())
+		btn.pressed.connect(func(): _set_status_filter(st_key))
+		status_filter_bar.add_child(btn)
+		status_filter_buttons[st_key] = btn
+
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -918,6 +952,12 @@ func _set_species_filter(sp_key: StringName) -> void:
 	active_species_filter = sp_key
 	for k in species_filter_buttons:
 		UITheme.apply_button_style(species_filter_buttons[k], k == sp_key)
+	_refresh_workforce_citizen_list()
+
+func _set_status_filter(st_key: StringName) -> void:
+	active_status_filter = st_key
+	for k in status_filter_buttons:
+		UITheme.apply_button_style(status_filter_buttons[k], k == st_key)
 	_refresh_workforce_citizen_list()
 
 func toggle_workforce_panel() -> void:
@@ -983,6 +1023,10 @@ func _refresh_workforce_citizen_list() -> void:
 		if active_species_filter != &"all" and sp_id != active_species_filter:
 			continue
 
+		var st_id: StringName = c.get("social_status_id", &"commoner")
+		if active_status_filter != &"all" and st_id != active_status_filter:
+			continue
+
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 6)
 		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -991,12 +1035,14 @@ func _refresh_workforce_citizen_list() -> void:
 		var state_str: String = c.get("state_str", "Idle")
 		var wp_str: String = c.get("workplace_str", "None")
 		var sp_name_str: String = c.get("species_name", "Human")
+		var st_name_str: String = c.get("social_status_name", "Commoner")
 		var skill_name: String = str(c.get("primary_skill_name", "")).capitalize()
 		var skill_val: int = c.get("primary_skill_val", 50)
-		lbl.text = "#%d | %s (%s) | %s | %s | Energy: %d%% | %s: %d" % [
+		lbl.text = "#%d | %s (%s, %s) | %s | %s | Energy: %d%% | %s: %d" % [
 			c.get("id", 0),
 			str(role).capitalize(),
 			sp_name_str,
+			st_name_str,
 			state_str,
 			wp_str,
 			c.get("energy", 100),

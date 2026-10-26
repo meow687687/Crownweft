@@ -113,6 +113,8 @@ static func serialize(
 			"carried_amount": c.carried_amount,
 			"active_job_id": c.active_job_id,
 			"species_id": str(c.species_id),
+			"social_status_id": str(c.social_status_id),
+			"status_transition_reason": str(c.last_status_transition_reason),
 			"current_block_reason": str(c.current_block_reason),
 			"energy": c.energy,
 			"is_resting": c.is_resting,
@@ -275,12 +277,16 @@ static func deserialize(data: Dictionary) -> Dictionary:
 		var c_pos_arr: Array = c_dict["position_tile"]
 		var raw_species: String = str(c_dict.get("species_id", ""))
 		var species_val: StringName = SpeciesCatalog.validate_species_id(StringName(raw_species)) if raw_species != "" else SpeciesCatalog.DEFAULT_SPECIES_ID
+		var raw_status: String = str(c_dict.get("social_status_id", ""))
+		var status_val: StringName = SocialClassCatalog.validate_status_id(StringName(raw_status)) if raw_status != "" else SocialClassCatalog.DEFAULT_STATUS_ID
 		var c: CitizenState = CitizenState.new(
 			c_dict["id"],
 			Vector2i(c_pos_arr[0], c_pos_arr[1]),
 			StringName(c_dict["role_id"]),
-			species_val
+			species_val,
+			status_val
 		)
+		c.last_status_transition_reason = str(c_dict.get("status_transition_reason", ""))
 		c.home_building_id = int(c_dict.get("home_building_id", 0))
 		c.workplace_id = int(c_dict.get("workplace_id", 0))
 		var target_arr: Array = c_dict.get("target_tile", c_pos_arr)

@@ -10,7 +10,7 @@ static func get_all_defs() -> Dictionary:
 		"health": 300,
 		"display_name": "Town Hall",
 		"cost": {},
-		"worker_slots": 0,
+		"worker_slots": 1,
 		"capacity": 150,
 		"accepted": [&"coin", &"bread", &"grain", &"timber", &"stone"],
 		"footprint": Vector2i(3, 3),

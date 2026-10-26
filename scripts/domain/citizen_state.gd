@@ -27,6 +27,8 @@ const IDLE_ENERGY_DRAIN: float = 0.02
 
 @export var id: int = 0
 @export var species_id: StringName = SpeciesCatalog.DEFAULT_SPECIES_ID
+@export var social_status_id: StringName = SocialClassCatalog.DEFAULT_STATUS_ID
+@export var last_status_transition_reason: String = ""
 @export var home_building_id: int = 0
 @export var workplace_id: int = 0
 @export var role_id: StringName = &"unassigned"
@@ -45,9 +47,10 @@ var path: Array[Vector2i] = []
 @export var is_resting: bool = false
 var skills: Dictionary = {} # StringName -> float
 
-func _init(p_id: int = 0, p_pos: Vector2i = Vector2i.ZERO, p_role: StringName = &"unassigned", p_species: StringName = &"") -> void:
+func _init(p_id: int = 0, p_pos: Vector2i = Vector2i.ZERO, p_role: StringName = &"unassigned", p_species: StringName = &"", p_status: StringName = &"") -> void:
 	id = p_id
 	species_id = SpeciesCatalog.validate_species_id(p_species) if p_species != &"" else SpeciesCatalog.DEFAULT_SPECIES_ID
+	social_status_id = SocialClassCatalog.validate_status_id(p_status) if p_status != &"" else SocialClassCatalog.DEFAULT_STATUS_ID
 	position_tile = p_pos
 	target_tile = p_pos
 	role_id = p_role
@@ -82,7 +85,8 @@ func get_skill_factor(skill_name: StringName) -> float:
 	var sk: float = get_skill(skill_name)
 	var base_factor: float = 0.75 + (sk / 200.0)
 	var species_mod: float = SpeciesCatalog.get_performance_modifier(species_id, skill_name)
-	return clampf(base_factor + species_mod, 0.60, 1.45)
+	var status_mod: float = SocialClassCatalog.get_crafting_modifier(social_status_id, skill_name)
+	return clampf(base_factor + species_mod + status_mod, 0.60, 1.45)
 
 func gain_experience(skill_name: StringName, base_amount: float = 0.5) -> float:
 	if not SKILL_NAMES.has(skill_name):
@@ -90,9 +94,19 @@ func gain_experience(skill_name: StringName, base_amount: float = 0.5) -> float:
 	var cur: float = get_skill(skill_name)
 	# Diminishing returns: lower gains as skill approaches MAX_SKILL
 	var factor: float = maxf(0.0, 1.0 - (cur / MAX_SKILL))
-	var gain: float = base_amount * factor
+	var learn_mod: float = SocialClassCatalog.get_learning_modifier(social_status_id)
+	var gain: float = base_amount * factor * learn_mod
 	set_skill(skill_name, cur + gain)
 	return gain
+
+func can_perform_role(role_name: StringName) -> bool:
+	if role_name == &"hauler" and SocialClassCatalog.refuses_manual_hauling(social_status_id):
+		return false
+	return true
+
+func set_social_status(new_status: StringName, reason: String = "") -> void:
+	social_status_id = SocialClassCatalog.validate_status_id(new_status)
+	last_status_transition_reason = reason
 
 func consume_energy(amount: float) -> void:
 	var drain_mod: float = SpeciesCatalog.get_energy_drain_modifier(species_id)

@@ -435,10 +435,21 @@ func _on_worker_assignment_changed(delta: int) -> void:
 	var max_slots: int = 3 if selected_building.is_under_construction() else BuildingCatalog.get_worker_slots_for_footprint(selected_building.definition_id, selected_building.get_footprint())
 	if delta > 0:
 		var available: CitizenState = null
-		for citizen: CitizenState in citizens:
-			if citizen.role_id == &"unassigned" and citizen.workplace_id == 0:
-				available = citizen
-				break
+		if selected_building.definition_id == &"town_hall":
+			for citizen: CitizenState in citizens:
+				if citizen.role_id == &"unassigned" and citizen.workplace_id == 0:
+					if citizen.social_status_id in [&"administrator", &"noble", &"scholar"]:
+						available = citizen
+						break
+			if available == null:
+				if ui != null:
+					ui.show_toast("Town Hall requires an Administrator, Scholar, or Noble", true)
+				return
+		else:
+			for citizen: CitizenState in citizens:
+				if citizen.role_id == &"unassigned" and citizen.workplace_id == 0:
+					available = citizen
+					break
 		if selected_building.assigned_workers >= max_slots:
 			if ui != null:
 				ui.show_toast("This building has no open %s slots" % ("builder" if selected_building.is_under_construction() else "worker"), true)
@@ -469,6 +480,7 @@ func _on_worker_assignment_changed(delta: int) -> void:
 
 func _worker_role_for_building(building_id: StringName) -> StringName:
 	match building_id:
+		&"town_hall": return &"administrator"
 		&"farm": return &"farmer"
 		&"woodcutter": return &"woodcutter"
 		&"quarry": return &"quarry_worker"
@@ -895,8 +907,14 @@ func _simulation_tick() -> void:
 		needs_report.get("hungry", 0),
 		needs_report.get("at_risk", 0),
 		main_inv,
-		current_tick
+		current_tick,
+		citizens
 	)
+
+	# Periodic check for social status advancement
+	if current_tick % 20 == 0:
+		for c: CitizenState in citizens:
+			SocialClassService.check_automatic_advancement(c, current_tick)
 
 	# 4. Create demands, assign jobs, and physically move haulers along A* paths.
 	var citizens_by_id: Dictionary = {}
@@ -1525,6 +1543,8 @@ func get_workforce_citizens_data() -> Array[Dictionary]:
 			"id": c.id,
 			"species_id": c.species_id,
 			"species_name": SpeciesCatalog.get_display_name(c.species_id),
+			"social_status_id": c.social_status_id,
+			"social_status_name": SocialClassCatalog.get_display_name(c.social_status_id),
 			"role": c.role_id,
 			"workplace_id": c.workplace_id,
 			"workplace_str": wp_str,
@@ -1556,6 +1576,8 @@ func get_assigned_citizens_for_building(building: BuildingState) -> Array[Dictio
 				"id": c.id,
 				"species_id": c.species_id,
 				"species_name": SpeciesCatalog.get_display_name(c.species_id),
+				"social_status_id": c.social_status_id,
+				"social_status_name": SocialClassCatalog.get_display_name(c.social_status_id),
 				"role": c.role_id,
 				"state_str": state_str,
 				"skill_name": relevant_skill,
@@ -1564,18 +1586,19 @@ func get_assigned_citizens_for_building(building: BuildingState) -> Array[Dictio
 			})
 	return list
 
-func spawn_citizen(pos: Vector2i, role: StringName = &"unassigned", species: StringName = &"") -> CitizenState:
+func spawn_citizen(pos: Vector2i, role: StringName = &"unassigned", species: StringName = &"", status: StringName = &"") -> CitizenState:
 	var s_id: StringName = SpeciesCatalog.validate_species_id(species) if species != &"" else SpeciesCatalog.DEFAULT_SPECIES_ID
-	var citizen: CitizenState = CitizenState.new(next_entity_id, pos, role, s_id)
+	var st_id: StringName = SocialClassCatalog.validate_status_id(status) if status != &"" else SocialClassCatalog.DEFAULT_STATUS_ID
+	var citizen: CitizenState = CitizenState.new(next_entity_id, pos, role, s_id, st_id)
 	next_entity_id += 1
 	citizens.append(citizen)
 	return citizen
 
-func spawn_citizen_with_distribution(pos: Vector2i, role: StringName = &"unassigned", rng_seed: int = 0) -> CitizenState:
+func spawn_citizen_with_distribution(pos: Vector2i, role: StringName = &"unassigned", rng_seed: int = 0, status: StringName = &"") -> CitizenState:
 	var s_ids: Array[StringName] = SpeciesCatalog.SPECIES_IDS
 	var pick_idx: int = absi(rng_seed) % s_ids.size()
 	var s_id: StringName = s_ids[pick_idx]
-	return spawn_citizen(pos, role, s_id)
+	return spawn_citizen(pos, role, s_id, status)
 
 func unassign_citizen(citizen: CitizenState) -> void:
 	if citizen == null or citizen.workplace_id <= 0:
@@ -1641,6 +1664,8 @@ func auto_staff_workplaces() -> void:
 
 			for citizen in citizens:
 				if citizen.role_id != &"unassigned" or citizen.workplace_id > 0 or citizen.is_resting:
+					continue
+				if workplace.definition_id == &"town_hall" and not (citizen.social_status_id in [&"administrator", &"noble", &"scholar"]):
 					continue
 				var s_fac: float = citizen.get_skill_factor(relevant_skill) if relevant_skill != &"" else 1.0
 				var eff_skill: float = s_fac * 100.0
