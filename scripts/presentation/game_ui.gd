@@ -16,6 +16,8 @@ signal save_game_requested()
 signal load_game_requested()
 signal toggle_government_panel_requested()
 signal policy_enact_requested(law_id: StringName, option_id: StringName)
+signal toggle_diplomacy_panel_requested()
+signal proposal_response_requested(proposal_id: int, accept: bool)
 
 # Top Bar Elements
 var label_coin: Label = null
@@ -89,6 +91,14 @@ var label_gov_summary: Label = null
 var box_gov_laws: VBoxContainer = null
 var label_gov_history: Label = null
 var _last_gov_data: Dictionary = {}
+
+# Faction Diplomacy Panel
+var btn_diplomacy: Button = null
+var panel_diplomacy: PanelContainer = null
+var list_diplomacy_factions: VBoxContainer = null
+var box_diplomacy_details: VBoxContainer = null
+var selected_diplomacy_faction_id: StringName = FactionCatalog.FACTION_VALEN
+var _last_diplomacy_data: Dictionary = {}
 
 func _ready() -> void:
 	_build_ui_layout()
@@ -167,6 +177,7 @@ func _build_ui_layout() -> void:
 	btn_overlay = _create_ctrl_button(ctrl_box, "LOGISTICS", func(): toggle_overlay_requested.emit())
 	btn_workforce = _create_ctrl_button(ctrl_box, "WORKFORCE", func(): toggle_workforce_panel_requested.emit())
 	btn_government = _create_ctrl_button(ctrl_box, "LAWS", func(): toggle_government_panel_requested.emit())
+	btn_diplomacy = _create_ctrl_button(ctrl_box, "DIPLOMACY", func(): toggle_diplomacy_panel_requested.emit())
 	_create_ctrl_button(ctrl_box, "SAVE", func(): save_game_requested.emit())
 	_create_ctrl_button(ctrl_box, "LOAD", func(): load_game_requested.emit())
 
@@ -371,6 +382,7 @@ func _build_ui_layout() -> void:
 
 	_build_workforce_panel()
 	_build_government_panel()
+	_build_diplomacy_panel()
 
 func _create_badge(parent: Node, title: String, val: String, col: Color) -> Label:
 	var lbl := Label.new()
@@ -1299,4 +1311,376 @@ func is_selected_positive(law_id: StringName, opt_id: StringName) -> bool:
 	if law_id == LawCatalog.LAW_FORESTRY and opt_id != &"open_extraction":
 		return true
 	return false
+
+# =========================================================================
+# FACTION DIPLOMACY PANEL
+# =========================================================================
+
+func _build_diplomacy_panel() -> void:
+	panel_diplomacy = PanelContainer.new()
+	panel_diplomacy.set_anchors_preset(Control.PRESET_CENTER)
+	panel_diplomacy.offset_left = -380
+	panel_diplomacy.offset_top = -260
+	panel_diplomacy.offset_right = 380
+	panel_diplomacy.offset_bottom = 260
+	panel_diplomacy.add_theme_stylebox_override("panel", UITheme.create_panel_style(UITheme.COLOR_BG_PANEL, UITheme.COLOR_BORDER_GOLD, 2, 6))
+	panel_diplomacy.visible = false
+	panel_diplomacy.mouse_filter = Control.MOUSE_FILTER_STOP
+	add_child(panel_diplomacy)
+
+	var main_vbox := VBoxContainer.new()
+	main_vbox.add_theme_constant_override("separation", 8)
+	panel_diplomacy.add_child(main_vbox)
+
+	var header := HBoxContainer.new()
+	header.add_theme_constant_override("separation", 10)
+	main_vbox.add_child(header)
+
+	var lbl_title := Label.new()
+	lbl_title.text = "FACTION DIPLOMACY & REALM RELATIONS"
+	lbl_title.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+	lbl_title.add_theme_font_size_override("font_size", 14)
+	lbl_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(lbl_title)
+
+	var btn_close := Button.new()
+	btn_close.text = "X"
+	btn_close.custom_minimum_size = Vector2(28, 24)
+	UITheme.apply_button_style(btn_close)
+	btn_close.pressed.connect(func(): panel_diplomacy.visible = false)
+	header.add_child(btn_close)
+
+	main_vbox.add_child(HSeparator.new())
+
+	var body_hbox := HBoxContainer.new()
+	body_hbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	body_hbox.add_theme_constant_override("separation", 12)
+	main_vbox.add_child(body_hbox)
+
+	# Left pane: Faction selector
+	var left_scroll := ScrollContainer.new()
+	left_scroll.custom_minimum_size = Vector2(190, 0)
+	left_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	body_hbox.add_child(left_scroll)
+
+	list_diplomacy_factions = VBoxContainer.new()
+	list_diplomacy_factions.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	list_diplomacy_factions.add_theme_constant_override("separation", 6)
+	left_scroll.add_child(list_diplomacy_factions)
+
+	body_hbox.add_child(VSeparator.new())
+
+	# Right pane: Details & Interactions
+	var right_scroll := ScrollContainer.new()
+	right_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	right_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	body_hbox.add_child(right_scroll)
+
+	box_diplomacy_details = VBoxContainer.new()
+	box_diplomacy_details.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box_diplomacy_details.add_theme_constant_override("separation", 8)
+	right_scroll.add_child(box_diplomacy_details)
+
+func toggle_diplomacy_panel() -> void:
+	if panel_diplomacy != null:
+		panel_diplomacy.visible = not panel_diplomacy.visible
+		if panel_diplomacy.visible:
+			_refresh_diplomacy_panel()
+
+func is_diplomacy_panel_visible() -> bool:
+	return panel_diplomacy != null and panel_diplomacy.visible
+
+func update_diplomacy_panel(dip_data: Dictionary) -> void:
+	_last_diplomacy_data = dip_data
+	if panel_diplomacy != null and panel_diplomacy.visible:
+		_refresh_diplomacy_panel()
+
+func _refresh_diplomacy_panel() -> void:
+	if list_diplomacy_factions == null or box_diplomacy_details == null:
+		return
+
+	# Rebuild Left Faction Selector
+	for child in list_diplomacy_factions.get_children():
+		child.queue_free()
+
+	for f_id in FactionCatalog.FACTION_IDS:
+		var def_info: Dictionary = FactionCatalog.get_faction_def(f_id)
+		var btn := Button.new()
+		var d_name: String = str(def_info.get("display_name", str(f_id)))
+		btn.text = d_name
+		btn.custom_minimum_size = Vector2(170, 32)
+		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		btn.add_theme_font_size_override("font_size", 11)
+		
+		var is_sel: bool = (f_id == selected_diplomacy_faction_id)
+		if is_sel:
+			btn.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+			btn.add_theme_stylebox_override("normal", UITheme.create_panel_style(Color(0.2, 0.25, 0.35), UITheme.COLOR_ACCENT_GOLD, 2, 4))
+		else:
+			btn.add_theme_color_override("font_color", Color.WHITE)
+			btn.add_theme_stylebox_override("normal", UITheme.create_panel_style(Color(0.12, 0.14, 0.18), Color(0.25, 0.28, 0.32), 1, 4))
+		
+		var f_key: StringName = f_id
+		btn.pressed.connect(func():
+			selected_diplomacy_faction_id = f_key
+			_refresh_diplomacy_panel()
+		)
+		list_diplomacy_factions.add_child(btn)
+
+	# Rebuild Right Details Pane
+	for child in box_diplomacy_details.get_children():
+		child.queue_free()
+
+	var fac_dict: Dictionary = _last_diplomacy_data.get("factions", {}).get(str(selected_diplomacy_faction_id), {})
+	var def_info: Dictionary = FactionCatalog.get_faction_def(selected_diplomacy_faction_id)
+	
+	# 1. Header: Name & Cultural Profile
+	var title_lbl := Label.new()
+	title_lbl.text = "%s" % str(def_info.get("display_name", selected_diplomacy_faction_id))
+	title_lbl.add_theme_font_size_override("font_size", 13)
+	title_lbl.add_theme_color_override("font_color", def_info.get("color", UITheme.COLOR_ACCENT_GOLD))
+	box_diplomacy_details.add_child(title_lbl)
+
+	var sub_lbl := Label.new()
+	sub_lbl.text = "Culture: %s  |  Religion: %s  |  Doctrine: %s" % [
+		str(fac_dict.get("culture", def_info.get("culture", "Valen"))).capitalize(),
+		str(fac_dict.get("religion", def_info.get("religion", "Pantheon"))).capitalize(),
+		str(fac_dict.get("doctrine", def_info.get("doctrine", "Communal"))).capitalize()
+	]
+	sub_lbl.add_theme_font_size_override("font_size", 10)
+	sub_lbl.add_theme_color_override("font_color", UITheme.COLOR_TEXT_MUTED)
+	box_diplomacy_details.add_child(sub_lbl)
+
+	var desc_lbl := Label.new()
+	desc_lbl.text = str(def_info.get("description", ""))
+	desc_lbl.add_theme_font_size_override("font_size", 10)
+	desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box_diplomacy_details.add_child(desc_lbl)
+
+	# 2. Goals
+	var goals_arr: Array = fac_dict.get("active_goals", def_info.get("default_goals", []))
+	var g_str: String = "Strategic Goals: "
+	for g in goals_arr:
+		g_str += "%s • " % FactionCatalog.get_goal_display_name(StringName(g))
+	var goal_lbl := Label.new()
+	goal_lbl.text = g_str.trim_suffix(" • ")
+	goal_lbl.add_theme_font_size_override("font_size", 10)
+	goal_lbl.add_theme_color_override("font_color", Color("#54a0ff"))
+	box_diplomacy_details.add_child(goal_lbl)
+
+	box_diplomacy_details.add_child(HSeparator.new())
+
+	# 3. Relationship Gauges (if not player)
+	if selected_diplomacy_faction_id != FactionCatalog.FACTION_PLAYER:
+		var rel_dict: Dictionary = _last_diplomacy_data.get("relationships", {}).get(str(selected_diplomacy_faction_id), {})
+		var trust_val: float = float(rel_dict.get("trust", 0.0))
+		var threat_val: float = float(rel_dict.get("threat", 10.0))
+		var resent_val: float = float(rel_dict.get("resentment", 0.0))
+		var respect_val: float = float(rel_dict.get("respect", 20.0))
+		var coop_val: float = float(rel_dict.get("economic_cooperation", 0.0))
+		var stance_str: String = str(rel_dict.get("stance", "Neutral & Cautious"))
+
+		var rel_header := Label.new()
+		rel_header.text = "BILATERAL RELATIONSHIP (Stance: %s)" % stance_str
+		rel_header.add_theme_font_size_override("font_size", 11)
+		rel_header.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+		box_diplomacy_details.add_child(rel_header)
+
+		var grid := GridContainer.new()
+		grid.columns = 2
+		grid.add_theme_constant_override("h_separation", 16)
+		grid.add_theme_constant_override("v_separation", 4)
+		box_diplomacy_details.add_child(grid)
+
+		_add_rel_stat_row(grid, "Trust:", "%+.0f [-100, +100]" % trust_val, Color("#1dd1a1") if trust_val >= 0 else Color("#ff6b6b"))
+		_add_rel_stat_row(grid, "Perceived Threat:", "%.0f / 100" % threat_val, Color("#feca57") if threat_val < 40 else Color("#ff6b6b"))
+		_add_rel_stat_row(grid, "Resentment:", "%.0f / 100" % resent_val, Color("#ff6b6b") if resent_val > 25 else Color("#1dd1a1"))
+		_add_rel_stat_row(grid, "Respect:", "%.0f / 100" % respect_val, Color("#54a0ff"))
+		_add_rel_stat_row(grid, "Cooperation:", "%.0f / 100" % coop_val, Color("#48dbfb"))
+
+		# Active treaties
+		var treaties: Array = fac_dict.get("active_treaties", [])
+		var t_text: String = "Active Treaties: "
+		if treaties.is_empty():
+			t_text += "None"
+		else:
+			for t in treaties:
+				var t_type: String = str(t.get("type", "Pact")).capitalize()
+				var exp: int = int(t.get("expires_tick", -1))
+				t_text += "%s (Expires tick %d) • " % [t_type, exp]
+			t_text = t_text.trim_suffix(" • ")
+		var t_lbl := Label.new()
+		t_lbl.text = t_text
+		t_lbl.add_theme_font_size_override("font_size", 10)
+		t_lbl.add_theme_color_override("font_color", Color("#1dd1a1") if not treaties.is_empty() else UITheme.COLOR_TEXT_MUTED)
+		box_diplomacy_details.add_child(t_lbl)
+
+		box_diplomacy_details.add_child(HSeparator.new())
+
+		# 4. Pending Proposals Card
+		var prop_card := VBoxContainer.new()
+		prop_card.add_theme_constant_override("separation", 6)
+		box_diplomacy_details.add_child(prop_card)
+
+		var p_title := Label.new()
+		p_title.text = "PENDING DIPLOMATIC PROPOSALS"
+		p_title.add_theme_font_size_override("font_size", 11)
+		p_title.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+		prop_card.add_child(p_title)
+
+		var pending_proposals: Array = _last_diplomacy_data.get("proposals", [])
+		var active_prop: Dictionary = {}
+		for p in pending_proposals:
+			if p.get("from_faction", &"") == selected_diplomacy_faction_id and p.get("status", "") == "pending":
+				active_prop = p
+				break
+
+		if active_prop.is_empty():
+			var no_p_lbl := Label.new()
+			no_p_lbl.text = "No pending proposals awaiting royal response."
+			no_p_lbl.add_theme_font_size_override("font_size", 10)
+			no_p_lbl.add_theme_color_override("font_color", UITheme.COLOR_TEXT_MUTED)
+			prop_card.add_child(no_p_lbl)
+		else:
+			var prop_panel := PanelContainer.new()
+			prop_panel.add_theme_stylebox_override("panel", UITheme.create_panel_style(Color(0.18, 0.22, 0.3), UITheme.COLOR_ACCENT_GOLD, 1, 4))
+			prop_card.add_child(prop_panel)
+
+			var p_vbox := VBoxContainer.new()
+			p_vbox.add_theme_constant_override("separation", 4)
+			prop_panel.add_child(p_vbox)
+
+			var p_name_lbl := Label.new()
+			p_name_lbl.text = str(active_prop.get("title", "Diplomatic Proposal"))
+			p_name_lbl.add_theme_font_size_override("font_size", 11)
+			p_name_lbl.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+			p_vbox.add_child(p_name_lbl)
+
+			var p_reason_lbl := Label.new()
+			p_reason_lbl.text = str(active_prop.get("reason", ""))
+			p_reason_lbl.add_theme_font_size_override("font_size", 10)
+			p_reason_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			p_vbox.add_child(p_reason_lbl)
+
+			var p_fore_lbl := Label.new()
+			p_fore_lbl.text = "Forecast: %s" % str(active_prop.get("forecast", ""))
+			p_fore_lbl.add_theme_font_size_override("font_size", 9)
+			p_fore_lbl.add_theme_color_override("font_color", Color("#c8d6e5"))
+			p_fore_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			p_vbox.add_child(p_fore_lbl)
+
+			var btn_hbox := HBoxContainer.new()
+			btn_hbox.add_theme_constant_override("separation", 10)
+			p_vbox.add_child(btn_hbox)
+
+			var prop_id: int = int(active_prop.get("id", 0))
+			var btn_accept := Button.new()
+			btn_accept.text = "Accept"
+			btn_accept.custom_minimum_size = Vector2(80, 24)
+			btn_accept.add_theme_font_size_override("font_size", 10)
+			UITheme.apply_button_style(btn_accept)
+			btn_accept.add_theme_color_override("font_color", Color("#1dd1a1"))
+			btn_accept.pressed.connect(func(): proposal_response_requested.emit(prop_id, true))
+			btn_hbox.add_child(btn_accept)
+
+			var btn_refuse := Button.new()
+			btn_refuse.text = "Refuse"
+			btn_refuse.custom_minimum_size = Vector2(80, 24)
+			btn_refuse.add_theme_font_size_override("font_size", 10)
+			UITheme.apply_button_style(btn_refuse)
+			btn_refuse.add_theme_color_override("font_color", Color("#ff6b6b"))
+			btn_refuse.pressed.connect(func(): proposal_response_requested.emit(prop_id, false))
+			btn_hbox.add_child(btn_refuse)
+
+		box_diplomacy_details.add_child(HSeparator.new())
+
+		# 5. Faction Memory
+		var mem_header := Label.new()
+		mem_header.text = "FACTION MEMORIES & INTERPRETATIONS"
+		mem_header.add_theme_font_size_override("font_size", 11)
+		mem_header.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+		box_diplomacy_details.add_child(mem_header)
+
+		var memories: Array = fac_dict.get("memories", [])
+		if memories.is_empty():
+			var no_mem := Label.new()
+			no_mem.text = "No recorded diplomatic memories involving this realm."
+			no_mem.add_theme_font_size_override("font_size", 10)
+			no_mem.add_theme_color_override("font_color", UITheme.COLOR_TEXT_MUTED)
+			box_diplomacy_details.add_child(no_mem)
+		else:
+			for m in memories:
+				var m_lbl := Label.new()
+				m_lbl.text = "• Tick %d [%s]: %s" % [
+					int(m.get("tick", 0)),
+					str(m.get("event_type", "")).capitalize(),
+					str(m.get("interpretation", ""))
+				]
+				m_lbl.add_theme_font_size_override("font_size", 9)
+				m_lbl.add_theme_color_override("font_color", Color("#c8d6e5"))
+				m_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+				box_diplomacy_details.add_child(m_lbl)
+
+		box_diplomacy_details.add_child(HSeparator.new())
+
+		# 6. Developer Diagnostics: Utility Breakdown
+		var diag_header := Label.new()
+		diag_header.text = "DEVELOPER DIAGNOSTICS: AGENT UTILITY SCORING"
+		diag_header.add_theme_font_size_override("font_size", 10)
+		diag_header.add_theme_color_override("font_color", Color("#feca57"))
+		box_diplomacy_details.add_child(diag_header)
+
+		var diag: Dictionary = fac_dict.get("last_utility_breakdown", {})
+		if diag.is_empty():
+			var no_diag := Label.new()
+			no_diag.text = "Agent has not evaluated candidate actions yet."
+			no_diag.add_theme_font_size_override("font_size", 9)
+			no_diag.add_theme_color_override("font_color", UITheme.COLOR_TEXT_MUTED)
+			box_diplomacy_details.add_child(no_diag)
+		else:
+			var b_down: Dictionary = diag.get("breakdown", {})
+			var diag_lbl := Label.new()
+			diag_lbl.text = "Chosen Action: %s (Utility: %.1f)\nBreakdown: GoalFit=%.1f  Benefit=%.1f  RelEffect=%.1f  Doctrine=%.1f  Cost=%.1f  Risk=%.1f  OppCost=%.1f" % [
+				str(diag.get("chosen_action", "none")),
+				float(diag.get("utility", 0.0)),
+				float(b_down.get("goal_fit", 0.0)),
+				float(b_down.get("expected_benefit", 0.0)),
+				float(b_down.get("relationship_effect", 0.0)),
+				float(b_down.get("doctrine_fit", 0.0)),
+				float(b_down.get("resource_cost", 0.0)),
+				float(b_down.get("risk", 0.0)),
+				float(b_down.get("opportunity_cost", 0.0))
+			]
+			diag_lbl.add_theme_font_size_override("font_size", 9)
+			diag_lbl.add_theme_color_override("font_color", Color("#a4b0be"))
+			diag_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			box_diplomacy_details.add_child(diag_lbl)
+	else:
+		# Player Faction Overview
+		var p_header := Label.new()
+		p_header.text = "SOVEREIGN STATUS"
+		p_header.add_theme_font_size_override("font_size", 11)
+		p_header.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+		box_diplomacy_details.add_child(p_header)
+
+		var p_info := Label.new()
+		p_info.text = "The realm is sovereign. Neighboring states form impressions and craft proposals based on your trade commitments, relief aid, military posture, and enacted decrees."
+		p_info.add_theme_font_size_override("font_size", 10)
+		p_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		box_diplomacy_details.add_child(p_info)
+
+func _add_rel_stat_row(grid: GridContainer, label_text: String, val_text: String, col: Color) -> void:
+	var l := Label.new()
+	l.text = label_text
+	l.add_theme_font_size_override("font_size", 10)
+	l.add_theme_color_override("font_color", UITheme.COLOR_TEXT_MUTED)
+	grid.add_child(l)
+
+	var v := Label.new()
+	v.text = val_text
+	v.add_theme_font_size_override("font_size", 10)
+	v.add_theme_color_override("font_color", col)
+	grid.add_child(v)
+
 

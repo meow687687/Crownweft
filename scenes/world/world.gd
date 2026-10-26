@@ -18,6 +18,8 @@ var combat: CombatSystem = null
 var economy: EconomyState = EconomyState.new()
 var economy_system: EconomySystem = EconomySystem.new()
 var government: GovernmentState = GovernmentState.new()
+var diplomacy: DiplomacyState = DiplomacyState.new()
+var diplomacy_system: DiplomacySystem = DiplomacySystem.new()
 
 var buildings: Array[BuildingState] = []
 var citizens: Array[CitizenState] = []
@@ -61,6 +63,8 @@ func _init_simulation() -> void:
 	economy = EconomyState.new()
 	economy_system = EconomySystem.new()
 	government = GovernmentState.new()
+	diplomacy = DiplomacyState.new()
+	diplomacy_system = DiplomacySystem.new()
 	
 	combat.raid_announced.connect(func(seconds_left: float):
 		ui.show_raid_warning(seconds_left)
@@ -135,6 +139,8 @@ func _setup_signals() -> void:
 	ui.policy_enact_requested.connect(func(l_id: StringName, o_id: StringName):
 		enact_policy(l_id, o_id, "Decree via Laws Panel")
 	)
+	ui.toggle_diplomacy_panel_requested.connect(_on_toggle_diplomacy_panel)
+	ui.proposal_response_requested.connect(_on_proposal_response)
 	ui.save_game_requested.connect(_on_save_game)
 	ui.load_game_requested.connect(_on_load_game)
 
@@ -290,6 +296,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			_on_toggle_government_panel()
 			get_viewport().set_input_as_handled()
 			return
+		elif kb_event.keycode == KEY_D and active_build_id == &"":
+			_on_toggle_diplomacy_panel()
+			get_viewport().set_input_as_handled()
+			return
 
 	if active_build_id != &"" and BuildingCatalog.is_building_resizable(active_build_id):
 		if event is InputEventKey and event.pressed:
@@ -328,6 +338,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		if ui != null and ui.panel_government != null and ui.panel_government.visible:
 			var gov_rect := Rect2(screen_size * 0.5 - Vector2(340, 250), Vector2(680, 500))
 			if gov_rect.has_point(mouse_screen):
+				return
+		if ui != null and ui.panel_diplomacy != null and ui.panel_diplomacy.visible:
+			var dip_rect := Rect2(screen_size * 0.5 - Vector2(380, 260), Vector2(760, 520))
+			if dip_rect.has_point(mouse_screen):
 				return
 		if ui != null and ui.panel_inspector != null and ui.panel_inspector.visible and mouse_screen.x > (screen_size.x - 350.0):
 			return
@@ -924,8 +938,12 @@ func _simulation_tick() -> void:
 		main_inv,
 		current_tick,
 		citizens,
-		government
+		government,
+		diplomacy
 	)
+
+	# Faction diplomacy decisions and relationship tracking
+	diplomacy_system.tick_diplomacy(diplomacy, current_tick, main_inv, economy, government)
 
 	# Periodic check for social status advancement
 	if current_tick % 20 == 0:
@@ -954,6 +972,10 @@ func _simulation_tick() -> void:
 		_update_building_inspector()
 	if ui != null and ui.is_workforce_panel_visible():
 		_update_workforce_panel()
+	if ui != null and ui.is_government_panel_visible():
+		_update_government_ui()
+	if ui != null and ui.is_diplomacy_panel_visible():
+		_update_diplomacy_ui()
 	renderer.queue_redraw()
 
 func _update_worker_movement() -> void:
@@ -1370,6 +1392,55 @@ func _update_government_ui() -> void:
 	}
 	ui.update_government_panel(gov_data)
 
+func _on_toggle_diplomacy_panel() -> void:
+	if ui != null:
+		ui.toggle_diplomacy_panel()
+		if ui.is_diplomacy_panel_visible():
+			_update_diplomacy_ui()
+
+func _on_proposal_response(proposal_id: int, accept: bool) -> void:
+	if diplomacy == null or diplomacy_system == null:
+		return
+	var main_inv: Inventory = buildings[0].inventory if not buildings.is_empty() else null
+	var res: Dictionary = diplomacy_system.resolve_player_response(diplomacy, proposal_id, accept, main_inv, economy, current_tick)
+	if res.get("ok", false):
+		var msg: String = "Diplomatic proposal accepted." if accept else "Diplomatic proposal refused."
+		if ui != null:
+			ui.show_toast(msg, false)
+			_update_diplomacy_ui()
+	else:
+		if ui != null:
+			ui.show_toast(res.get("reason", "Cannot resolve proposal"), true)
+
+func _update_diplomacy_ui() -> void:
+	if ui == null or diplomacy == null:
+		return
+
+	var facs_data: Dictionary = {}
+	var rels_data: Dictionary = {}
+	for f_id in diplomacy.factions:
+		var f: FactionState = diplomacy.factions[f_id]
+		facs_data[str(f_id)] = f.serialize()
+		if f_id != FactionCatalog.FACTION_PLAYER:
+			var rel: DiplomaticRelationship = diplomacy.get_relationship(f_id, FactionCatalog.FACTION_PLAYER)
+			var r_dict: Dictionary = rel.serialize()
+			r_dict["stance"] = rel.get_relationship_stance()
+			rels_data[str(f_id)] = r_dict
+
+	var props_arr: Array = []
+	for p in diplomacy.pending_proposals:
+		var p_dict: Dictionary = p.serialize()
+		p_dict["title"] = p.get_title()
+		props_arr.append(p_dict)
+
+	var dip_payload: Dictionary = {
+		"factions": facs_data,
+		"relationships": rels_data,
+		"proposals": props_arr,
+		"chronicle": diplomacy.diplomatic_chronicle.duplicate(true)
+	}
+	ui.update_diplomacy_panel(dip_payload)
+
 func _on_save_game() -> void:
 	var success: bool = SaveService.save_game_to_file(
 		world_state,
@@ -1382,7 +1453,8 @@ func _on_save_game() -> void:
 		sim_speed_multiplier,
 		SaveService.DEFAULT_SAVE_PATH,
 		auto_staffing_enabled,
-		government
+		government,
+		diplomacy
 	)
 	if success:
 		ui.show_toast("Realm state saved successfully", false)
@@ -1401,6 +1473,7 @@ func _on_load_game() -> void:
 		renderer.invalidate_world_visuals()
 	economy = loaded["economy"]
 	government = loaded.get("government", GovernmentState.new())
+	diplomacy = loaded.get("diplomacy", DiplomacyState.new())
 	buildings = loaded["buildings"]
 	citizens = loaded["citizens"]
 	military_units = loaded["military_units"]

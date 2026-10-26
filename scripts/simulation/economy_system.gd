@@ -9,7 +9,8 @@ func tick_economy(
 	town_inventory: Inventory,
 	current_tick: int,
 	citizens_list: Array = [],
-	government: GovernmentState = null
+	government: GovernmentState = null,
+	diplomacy: DiplomacyState = null
 ) -> void:
 	if economy == null:
 		return
@@ -88,7 +89,14 @@ func tick_economy(
 			else:
 				policy_approval_mod += LawCatalog.get_policy_approval_mod(LawCatalog.LAW_FORESTRY, for_pol)
 
-		var final_target: float = clampf(base_target - penalty + status_approval_bonus + admin_approval_dampening + policy_approval_mod, 0.0, 100.0)
+		# Diplomatic treaties approval bonus
+		var diplomacy_approval_bonus: float = 0.0
+		if diplomacy != null:
+			var p_fac: FactionState = diplomacy.factions.get(FactionCatalog.FACTION_PLAYER, null)
+			if p_fac != null and p_fac.has_active_treaty(&"defensive_pact"):
+				diplomacy_approval_bonus += 4.0
+
+		var final_target: float = clampf(base_target - penalty + status_approval_bonus + admin_approval_dampening + policy_approval_mod + diplomacy_approval_bonus, 0.0, 100.0)
 		
 		# Smooth approval drift (up to 8 points per tax cycle)
 		economy.approval = move_toward(economy.approval, final_target, 8.0)

@@ -14,7 +14,8 @@ static func serialize(
 	current_tick: int,
 	sim_speed: float,
 	auto_staffing_enabled: bool = false,
-	government: GovernmentState = null
+	government: GovernmentState = null,
+	diplomacy: DiplomacyState = null
 ) -> Dictionary:
 	var gov_dict: Dictionary = {
 		"enacted_policies": {},
@@ -38,6 +39,7 @@ static func serialize(
 			"auto_staffing_enabled": auto_staffing_enabled
 		},
 		"government": gov_dict,
+		"diplomacy": diplomacy.serialize() if diplomacy != null else DiplomacyState.new().serialize(),
 		"economy": {
 			"tax_level": economy.tax_level if economy != null else 1,
 			"approval": economy.approval if economy != null else 60.0,
@@ -410,5 +412,11 @@ static func deserialize(data: Dictionary) -> Dictionary:
 				if item is Dictionary:
 					gov_state.policy_history.append(item.duplicate(true))
 	result["government"] = gov_state
+
+	# Deserialize diplomacy
+	var dip_state := DiplomacyState.new()
+	if data.has("diplomacy") and data["diplomacy"] is Dictionary:
+		dip_state = DiplomacyState.deserialize(data["diplomacy"])
+	result["diplomacy"] = dip_state
 		
 	return result
