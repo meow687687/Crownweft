@@ -87,6 +87,7 @@ static func serialize(
 			"assigned_workers": b.assigned_workers,
 			"work_priority": b.work_priority,
 			"production_progress": b.production_progress,
+			"production_work_accum": b.production_work_accum,
 			"block_reason": str(b.current_block_reason),
 			"health": b.health,
 			"max_health": b.max_health,
@@ -117,6 +118,10 @@ static func serialize(
 		
 	# Serialize citizens
 	for c in citizens:
+		var serialized_path: Array = []
+		for p: Vector2i in c.path:
+			serialized_path.append([p.x, p.y])
+
 		var c_dict: Dictionary = {
 			"id": c.id,
 			"home_building_id": c.home_building_id,
@@ -124,6 +129,7 @@ static func serialize(
 			"role_id": str(c.role_id),
 			"position_tile": [c.position_tile.x, c.position_tile.y],
 			"target_tile": [c.target_tile.x, c.target_tile.y],
+			"path": serialized_path,
 			"move_state": c.move_state,
 			"hunger_counter": c.hunger_counter,
 			"food_state": c.food_state,
@@ -253,7 +259,8 @@ static func deserialize(data: Dictionary) -> Dictionary:
 			b.recalculate_entrance(b.footprint)
 		b.assigned_workers = b_dict.get("assigned_workers", 0)
 		b.work_priority = int(b_dict.get("work_priority", BuildingState.PRIORITY_DEFAULT))
-		b.production_progress = b_dict.get("production_progress", 0)
+		b.production_progress = int(b_dict.get("production_progress", 0))
+		b.production_work_accum = float(b_dict.get("production_work_accum", 0.0))
 		b.current_block_reason = StringName(b_dict.get("block_reason", ""))
 		b.health = int(b_dict.get("health", 100))
 		b.max_health = int(b_dict.get("max_health", 100))
@@ -337,6 +344,11 @@ static func deserialize(data: Dictionary) -> Dictionary:
 			c.target_tile = target_arr
 		else:
 			c.target_tile = c_pos
+		var saved_path = c_dict.get("path", [])
+		if saved_path is Array:
+			for pt in saved_path:
+				if pt is Array and pt.size() >= 2:
+					c.path.append(Vector2i(int(pt[0]), int(pt[1])))
 		c.move_state = int(c_dict.get("move_state", CitizenState.MoveState.IDLE))
 		c.hunger_counter = c_dict.get("hunger_counter", 0)
 		c.food_state = c_dict.get("food_state", CitizenState.FoodState.FED)

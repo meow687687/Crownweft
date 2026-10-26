@@ -1000,10 +1000,11 @@ func _simulation_tick() -> void:
 	_update_citizen_hauling_movement()
 
 	# 5. Keep the route overlay connected to live jobs.
-	renderer.active_jobs.clear()
-	for job: HaulJob in job_board.jobs.values():
-		if job.status != HaulJob.Status.DELIVERED and job.status != HaulJob.Status.CANCELLED:
-			renderer.active_jobs.append(job)
+	if renderer != null:
+		renderer.active_jobs.clear()
+		for job: HaulJob in job_board.jobs.values():
+			if job.status != HaulJob.Status.DELIVERED and job.status != HaulJob.Status.CANCELLED:
+				renderer.active_jobs.append(job)
 	_update_ui_state(needs_report)
 	if selected_citizen != null:
 		_update_citizen_inspector()
@@ -1017,7 +1018,8 @@ func _simulation_tick() -> void:
 		_update_diplomacy_ui()
 	if ui != null and ui.is_world_map_visible():
 		_update_world_map_ui()
-	renderer.queue_redraw()
+	if renderer != null:
+		renderer.queue_redraw()
 
 func _update_worker_movement() -> void:
 	var defs: Dictionary = BuildingCatalog.get_all_defs()
@@ -1360,10 +1362,11 @@ func _update_ui_state(needs_report: Dictionary) -> void:
 		total_timber += b.inventory.get_quantity(&"timber")
 		total_stone += b.inventory.get_quantity(&"stone")
 		
-	ui.update_resources(total_coin, total_bread, total_grain, total_timber, total_stone)
-	ui.update_population(citizens.size(), needs_report.get("fed", 0), needs_report.get("hungry", 0), needs_report.get("at_risk", 0))
-	if economy != null:
-		ui.update_economy(economy.get_tax_level_name(), economy.approval)
+	if ui != null:
+		ui.update_resources(total_coin, total_bread, total_grain, total_timber, total_stone)
+		ui.update_population(citizens.size(), needs_report.get("fed", 0), needs_report.get("hungry", 0), needs_report.get("at_risk", 0))
+		if economy != null:
+			ui.update_economy(economy.get_tax_level_name(), economy.approval)
 	
 	if selected_building != null:
 		_update_building_inspector()
@@ -1643,7 +1646,7 @@ func _on_army_resupply_requested(army_id: int) -> void:
 	else:
 		ui.show_toast(res.get("reason", "Resupply failed"), true)
 
-func _on_save_game() -> void:
+func save_game(file_path: String = SaveService.DEFAULT_SAVE_PATH) -> bool:
 	var success: bool = SaveService.save_game_to_file(
 		world_state,
 		economy,
@@ -1653,27 +1656,40 @@ func _on_save_game() -> void:
 		job_board,
 		current_tick,
 		sim_speed_multiplier,
-		SaveService.DEFAULT_SAVE_PATH,
+		file_path,
 		auto_staffing_enabled,
 		government,
 		diplomacy,
 		regional_world
 	)
-	if success:
-		ui.show_toast("Realm state saved successfully", false)
-	else:
-		ui.show_toast("Failed to save realm", true)
+	if ui != null:
+		if success:
+			ui.show_toast("Realm state saved successfully", false)
+		else:
+			ui.show_toast("Failed to save realm", true)
+	return success
+
+func _on_save_game() -> void:
+	save_game()
+
+func load_game(file_path: String = SaveService.DEFAULT_SAVE_PATH) -> bool:
+	var loaded: Dictionary = SaveService.load_game_from_file(file_path)
+	if loaded.is_empty():
+		if ui != null:
+			ui.show_toast("No valid save found", true)
+		return false
+	apply_loaded_state(loaded)
+	return true
 
 func _on_load_game() -> void:
-	var loaded: Dictionary = SaveService.load_game_from_file()
-	if loaded.is_empty():
-		ui.show_toast("No valid save found", true)
-		return
-		
+	load_game()
+
+func apply_loaded_state(loaded: Dictionary) -> void:
 	if loaded.has("world_state") and loaded["world_state"] != null:
 		world_state = loaded["world_state"]
-		renderer.world_state = world_state
-		renderer.invalidate_world_visuals()
+		if renderer != null:
+			renderer.world_state = world_state
+			renderer.invalidate_world_visuals()
 	economy = loaded["economy"]
 	government = loaded.get("government", GovernmentState.new())
 	diplomacy = loaded.get("diplomacy", DiplomacyState.new())
@@ -1703,6 +1719,7 @@ func _on_load_game() -> void:
 				if active_job.status == HaulJob.Status.IN_TRANSIT or citizen.carried_amount > 0:
 					restored_hauler.carried_resource = citizen.carried_resource if citizen.carried_resource != &"" else active_job.resource_id
 					restored_hauler.carried_amount = citizen.carried_amount if citizen.carried_amount > 0 else active_job.amount
+				restored_hauler.path = citizen.path.duplicate()
 
 	current_tick = loaded["meta"].get("current_tick", 0)
 	sim_speed_multiplier = loaded["meta"].get("sim_speed", 1.0)
@@ -1728,18 +1745,20 @@ func _on_load_game() -> void:
 		max_job_id = maxi(max_job_id, int(job_id))
 	job_board._next_job_id = max_job_id + 1
 				
-	renderer.buildings = buildings
-	renderer.citizens = citizens
-	renderer.military_units = military_units
+	if renderer != null:
+		renderer.buildings = buildings
+		renderer.citizens = citizens
+		renderer.military_units = military_units
+		renderer.selected_building = null
+		renderer.selected_units = selected_units
+		renderer.queue_redraw()
 	selected_building = null
 	selected_units.clear()
-	renderer.selected_building = null
-	renderer.selected_units = selected_units
-	renderer.queue_redraw()
 	_update_ui_state({"fed": 0, "hungry": 0, "at_risk": 0})
-	ui.update_economy(economy.get_tax_level_name(), economy.approval)
-	_update_workforce_panel()
-	ui.show_toast("Realm loaded successfully", false)
+	if ui != null:
+		ui.update_economy(economy.get_tax_level_name(), economy.approval)
+		_update_workforce_panel()
+		ui.show_toast("Realm loaded successfully", false)
 
 func _update_building_inspector() -> void:
 	if selected_building == null or ui == null:

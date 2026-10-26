@@ -317,12 +317,10 @@ func test_hardening_cargo_recovery_all_phases() -> void:
 	assert_eq(h_b.carried_amount, 4, "Physical cargo must be retained by hauler")
 	
 	# Tick haulers: logistics detects destination missing, finds alternate destination (Town Hall), reserves in, and reroutes
-	log_b.tick_haulers(inv_map_b, 3, pathfinding, b_map_b)
-	# Since hauler was at (10, 11) directly adjacent to Town Hall (10, 10), delivery completes either on tick 3 or 4
-	if job_b.status == HaulJob.Status.IN_TRANSIT:
-		h_b.current_tile = Vector2i(10, 11)
-		log_b.tick_haulers(inv_map_b, 4, pathfinding, b_map_b)
-		
+	for t in range(3, 8):
+		log_b.tick_haulers(inv_map_b, t, pathfinding, b_map_b)
+		if h_b.carried_amount == 0:
+			break
 	assert_eq(job_b.status, HaulJob.Status.DELIVERED, "Job delivered to active Town Hall storage")
 	assert_eq(h_b.carried_amount, 0, "Hauler delivered cargo and is free")
 	assert_true(h_b.active_job == null, "Hauler has no stuck job")
