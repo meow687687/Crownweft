@@ -1,6 +1,8 @@
 class_name WorldRenderer
 extends Node2D
 
+const RoadAutotiler = preload("res://scripts/presentation/road_autotiler.gd")
+
 const TILE_SIZE: float = 16.0
 
 # Small hand-authored pixel sprites; nearest-neighbour filtering preserves their pixels.
@@ -42,7 +44,8 @@ var is_hover_valid: bool = false
 var _redraw_accumulator: float = 0.0
 const VISUAL_REFRESH_INTERVAL: float = 1.0 / 30.0
 var _terrain_cache: Texture2D = null
-var _road_cache: Texture2D = null
+var _road_cache: ImageTexture = null
+var _road_image_cache: Image = null
 var _terrain_cache_world: WorldState = null
 var _road_cache_world: WorldState = null
 
@@ -88,6 +91,7 @@ func _draw() -> void:
 func invalidate_world_visuals() -> void:
 	_terrain_cache = null
 	_road_cache = null
+	_road_image_cache = null
 	_terrain_cache_world = null
 	_road_cache_world = null
 	queue_redraw()
@@ -147,17 +151,43 @@ func _draw_roads() -> void:
 		)
 
 func _rebuild_road_cache() -> void:
-	var road_image: Image = Image.create(world_state.width * int(TILE_SIZE), world_state.height * int(TILE_SIZE), false, Image.FORMAT_RGBA8)
-	road_image.fill(Color(0, 0, 0, 0))
-	var road_sprite: Image = TEX_ROAD.get_image()
-	var road_rect := Rect2i(Vector2i.ZERO, road_sprite.get_size())
+	if world_state == null:
+		return
+	_road_image_cache = Image.create(world_state.width * int(TILE_SIZE), world_state.height * int(TILE_SIZE), false, Image.FORMAT_RGBA8)
+	_road_image_cache.fill(Color(0, 0, 0, 0))
 	for y in range(world_state.height):
 		for x in range(world_state.width):
-			var tile: WorldTile = world_state.get_tile(Vector2i(x, y))
-			if tile != null and tile.road_level > 0:
-				road_image.blit_rect(road_sprite, road_rect, Vector2i(x * int(TILE_SIZE), y * int(TILE_SIZE)))
-	_road_cache = ImageTexture.create_from_image(road_image)
+			var c := Vector2i(x, y)
+			if RoadAutotiler.has_road(world_state, c):
+				var mask: int = RoadAutotiler.get_road_mask(world_state, c)
+				var tile_img: Image = RoadAutotiler.get_variant_image(mask)
+				_road_image_cache.blit_rect(tile_img, Rect2i(Vector2i.ZERO, tile_img.get_size()), Vector2i(x * int(TILE_SIZE), y * int(TILE_SIZE)))
+	_road_cache = ImageTexture.create_from_image(_road_image_cache)
 	_road_cache_world = world_state
+
+func refresh_road_cells(affected_coords: Array[Vector2i]) -> void:
+	if world_state == null:
+		return
+	if _road_cache == null or _road_cache_world != world_state or _road_image_cache == null:
+		_rebuild_road_cache()
+		queue_redraw()
+		return
+		
+	var tile_rect := Rect2i(Vector2i.ZERO, Vector2i(int(TILE_SIZE), int(TILE_SIZE)))
+	for coord in affected_coords:
+		if not world_state.is_valid_coord(coord):
+			continue
+		var dst_pos := Vector2i(coord.x * int(TILE_SIZE), coord.y * int(TILE_SIZE))
+		if RoadAutotiler.has_road(world_state, coord):
+			var mask: int = RoadAutotiler.get_road_mask(world_state, coord)
+			var tile_img: Image = RoadAutotiler.get_variant_image(mask)
+			_road_image_cache.fill_rect(Rect2i(dst_pos, Vector2i(int(TILE_SIZE), int(TILE_SIZE))), Color(0, 0, 0, 0))
+			_road_image_cache.blit_rect(tile_img, tile_rect, dst_pos)
+		else:
+			_road_image_cache.fill_rect(Rect2i(dst_pos, Vector2i(int(TILE_SIZE), int(TILE_SIZE))), Color(0, 0, 0, 0))
+			
+	_road_cache.update(_road_image_cache)
+	queue_redraw()
 
 func _draw_buildings() -> void:
 	var defs: Dictionary = BuildingCatalog.get_all_defs()

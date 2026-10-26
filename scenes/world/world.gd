@@ -1,6 +1,8 @@
 class_name WorldScene
 extends Node2D
 
+const RoadAutotiler = preload("res://scripts/presentation/road_autotiler.gd")
+
 @onready var camera: RTSCamera = $RTSCamera
 @onready var renderer: WorldRenderer = $WorldRenderer
 @onready var ui: GameUI = $GameUI
@@ -433,13 +435,30 @@ func can_place_building_at(b_id: StringName, coord: Vector2i) -> Dictionary:
 	# Sites can be placed even if materials are pending; haulers will deliver them.
 	return {"ok": true, "reason": "Ready to build"}
 
-func build_road(coord: Vector2i) -> void:
+func build_road(coord: Vector2i) -> bool:
 	var tile: WorldTile = world_state.get_tile(coord)
 	if tile != null and tile.is_walkable:
 		tile.road_level = 1
 		pathfinding.set_road(coord, true)
-		renderer.invalidate_world_visuals()
-		ui.show_toast("Built road section", false)
+		if renderer != null:
+			renderer.refresh_road_cells(RoadAutotiler.get_affected_coords(coord, world_state))
+		if ui != null:
+			ui.show_toast("Built road section", false)
+		return true
+	return false
+
+func remove_road(coord: Vector2i) -> bool:
+	var tile: WorldTile = world_state.get_tile(coord)
+	if tile == null or tile.road_level == 0:
+		return false
+	tile.road_level = 0
+	tile._update_flags()
+	pathfinding.set_road(coord, false)
+	if renderer != null:
+		renderer.refresh_road_cells(RoadAutotiler.get_affected_coords(coord, world_state))
+	if ui != null:
+		ui.show_toast("Removed road section", false)
+	return true
 
 func place_building(b_id: StringName, coord: Vector2i, bypass_cost: bool = false) -> BuildingState:
 	var check: Dictionary = can_place_building_at(b_id, coord)
