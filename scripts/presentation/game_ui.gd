@@ -70,6 +70,8 @@ var btn_auto_staffing: Button = null
 var box_workforce_citizens: VBoxContainer = null
 var active_workforce_filter: StringName = &"ALL"
 var filter_buttons: Dictionary = {}
+var active_species_filter: StringName = &"all"
+var species_filter_buttons: Dictionary = {}
 var _last_workforce_citizens: Array = []
 var _last_workforce_summary: Dictionary = {}
 var _last_auto_staffing: bool = false
@@ -698,7 +700,8 @@ func show_citizen_details(citizen: CitizenState, workplace: BuildingState = null
 	if box_recruitment != null:
 		box_recruitment.visible = false
 
-	label_inspector_title.text = "CITIZEN #%d — %s" % [citizen.id, str(citizen.role_id).capitalize()]
+	var sp_name: String = SpeciesCatalog.get_display_name(citizen.species_id)
+	label_inspector_title.text = "CITIZEN #%d — %s (%s)" % [citizen.id, str(citizen.role_id).capitalize(), sp_name]
 
 	# Activity / Status explanation
 	if citizen.is_resting:
@@ -775,11 +778,24 @@ func show_citizen_details(citizen: CitizenState, workplace: BuildingState = null
 	elif citizen.food_state == CitizenState.FoodState.AT_RISK:
 		food_str = "Starving / At Risk"
 
-	var text: String = "ENERGY: %d / 100\n" % int(citizen.energy)
+	var sp_id: StringName = citizen.species_id
+	var sp_def: Dictionary = SpeciesCatalog.get_def(sp_id)
+	var sp_desc: String = sp_def.get("description", "")
+	var sp_adv: Array = sp_def.get("advantages", [])
+	var sp_dis: Array = sp_def.get("disadvantages", [])
+
+	var text: String = "SPECIES: %s\n" % sp_name
+	text += "TRAITS: %s\n" % sp_desc
+	if not sp_adv.is_empty():
+		text += "ADVANTAGES: %s\n" % ", ".join(sp_adv)
+	if not sp_dis.is_empty():
+		text += "DISADVANTAGES: %s\n" % ", ".join(sp_dis)
+	text += "\n"
+	text += "ENERGY: %d / 100\n" % int(citizen.energy)
 	text += "WORKPLACE: %s\n" % wp_name
 	text += "HOME: %s\n" % hm_name
 	text += "FOOD: %s\n\n" % food_str
-	text += "SKILLS:\n"
+	text += "SKILLS (with species modifiers):\n"
 	for s: StringName in CitizenState.SKILL_NAMES:
 		var s_val: int = int(citizen.get_skill(s))
 		var s_fac: float = citizen.get_skill_factor(s)
@@ -860,6 +876,23 @@ func _build_workforce_panel() -> void:
 		filter_bar.add_child(btn)
 		filter_buttons[s_name] = btn
 
+	var species_filter_bar := HBoxContainer.new()
+	species_filter_bar.add_theme_constant_override("separation", 4)
+	main_vbox.add_child(species_filter_bar)
+
+	var species_filters: Array[String] = ["ALL PEOPLES", "HUMAN", "STONEBORN", "GREENWARDEN"]
+	for sp_f in species_filters:
+		var btn := Button.new()
+		btn.text = sp_f
+		btn.custom_minimum_size = Vector2(0, 22)
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn.add_theme_font_size_override("font_size", 10)
+		UITheme.apply_button_style(btn, sp_f == "ALL PEOPLES")
+		var sp_key := StringName("all" if sp_f.begins_with("ALL") else sp_f.to_lower())
+		btn.pressed.connect(func(): _set_species_filter(sp_key))
+		species_filter_bar.add_child(btn)
+		species_filter_buttons[sp_key] = btn
+
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -879,6 +912,12 @@ func _set_workforce_filter(filter_name: StringName) -> void:
 	active_workforce_filter = filter_name
 	for s_name in filter_buttons:
 		UITheme.apply_button_style(filter_buttons[s_name], s_name == filter_name)
+	_refresh_workforce_citizen_list()
+
+func _set_species_filter(sp_key: StringName) -> void:
+	active_species_filter = sp_key
+	for k in species_filter_buttons:
+		UITheme.apply_button_style(species_filter_buttons[k], k == sp_key)
 	_refresh_workforce_citizen_list()
 
 func toggle_workforce_panel() -> void:
@@ -940,6 +979,10 @@ func _refresh_workforce_citizen_list() -> void:
 		if not matches:
 			continue
 
+		var sp_id: StringName = c.get("species_id", &"human")
+		if active_species_filter != &"all" and sp_id != active_species_filter:
+			continue
+
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 6)
 		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -947,11 +990,13 @@ func _refresh_workforce_citizen_list() -> void:
 		var lbl := Label.new()
 		var state_str: String = c.get("state_str", "Idle")
 		var wp_str: String = c.get("workplace_str", "None")
+		var sp_name_str: String = c.get("species_name", "Human")
 		var skill_name: String = str(c.get("primary_skill_name", "")).capitalize()
 		var skill_val: int = c.get("primary_skill_val", 50)
-		lbl.text = "#%d | %s | %s | %s | Energy: %d%% | %s: %d" % [
+		lbl.text = "#%d | %s (%s) | %s | %s | Energy: %d%% | %s: %d" % [
 			c.get("id", 0),
 			str(role).capitalize(),
+			sp_name_str,
 			state_str,
 			wp_str,
 			c.get("energy", 100),

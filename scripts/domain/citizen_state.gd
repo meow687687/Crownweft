@@ -26,6 +26,7 @@ const REST_ENERGY_RECOVERY: float = 2.0
 const IDLE_ENERGY_DRAIN: float = 0.02
 
 @export var id: int = 0
+@export var species_id: StringName = SpeciesCatalog.DEFAULT_SPECIES_ID
 @export var home_building_id: int = 0
 @export var workplace_id: int = 0
 @export var role_id: StringName = &"unassigned"
@@ -44,8 +45,9 @@ var path: Array[Vector2i] = []
 @export var is_resting: bool = false
 var skills: Dictionary = {} # StringName -> float
 
-func _init(p_id: int = 0, p_pos: Vector2i = Vector2i.ZERO, p_role: StringName = &"unassigned") -> void:
+func _init(p_id: int = 0, p_pos: Vector2i = Vector2i.ZERO, p_role: StringName = &"unassigned", p_species: StringName = &"") -> void:
 	id = p_id
+	species_id = SpeciesCatalog.validate_species_id(p_species) if p_species != &"" else SpeciesCatalog.DEFAULT_SPECIES_ID
 	position_tile = p_pos
 	target_tile = p_pos
 	role_id = p_role
@@ -63,8 +65,9 @@ func init_starting_skills(seed_offset: int = 0) -> void:
 	}
 	for s: StringName in SKILL_NAMES:
 		var prime: int = primes.get(s, 13)
-		var var_val: float = 40.0 + float(absi((id * prime + seed_offset) % 21))
-		skills[s] = clampf(var_val, MIN_SKILL, MAX_SKILL)
+		var base_val: float = 40.0 + float(absi((id * prime + seed_offset) % 21))
+		var species_mod: float = SpeciesCatalog.get_starting_skill_modifier(species_id, s)
+		skills[s] = clampf(base_val + species_mod, MIN_SKILL, MAX_SKILL)
 
 func get_skill(skill_name: StringName) -> float:
 	if not skills.has(skill_name):
@@ -77,7 +80,9 @@ func set_skill(skill_name: StringName, value: float) -> void:
 func get_skill_factor(skill_name: StringName) -> float:
 	# Bounded formula: 0.75 at skill 0, 1.00 at skill 50, 1.25 at skill 100
 	var sk: float = get_skill(skill_name)
-	return clampf(0.75 + (sk / 200.0), 0.75, 1.25)
+	var base_factor: float = 0.75 + (sk / 200.0)
+	var species_mod: float = SpeciesCatalog.get_performance_modifier(species_id, skill_name)
+	return clampf(base_factor + species_mod, 0.60, 1.45)
 
 func gain_experience(skill_name: StringName, base_amount: float = 0.5) -> float:
 	if not SKILL_NAMES.has(skill_name):
@@ -90,10 +95,12 @@ func gain_experience(skill_name: StringName, base_amount: float = 0.5) -> float:
 	return gain
 
 func consume_energy(amount: float) -> void:
-	energy = clampf(energy - amount, MIN_ENERGY, MAX_ENERGY)
+	var drain_mod: float = SpeciesCatalog.get_energy_drain_modifier(species_id)
+	energy = clampf(energy - (amount * drain_mod), MIN_ENERGY, MAX_ENERGY)
 
 func restore_energy(amount: float) -> void:
-	energy = clampf(energy + amount, MIN_ENERGY, MAX_ENERGY)
+	var rec_mod: float = SpeciesCatalog.get_energy_recovery_modifier(species_id)
+	energy = clampf(energy + (amount * rec_mod), MIN_ENERGY, MAX_ENERGY)
 
 func is_exhausted() -> bool:
 	return energy <= EXHAUSTION_THRESHOLD

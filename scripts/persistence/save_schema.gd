@@ -112,6 +112,7 @@ static func serialize(
 			"carried_resource": str(c.carried_resource),
 			"carried_amount": c.carried_amount,
 			"active_job_id": c.active_job_id,
+			"species_id": str(c.species_id),
 			"current_block_reason": str(c.current_block_reason),
 			"energy": c.energy,
 			"is_resting": c.is_resting,
@@ -272,10 +273,13 @@ static func deserialize(data: Dictionary) -> Dictionary:
 	var citizens_arr: Array[CitizenState] = []
 	for c_dict in data.get("citizens", []):
 		var c_pos_arr: Array = c_dict["position_tile"]
+		var raw_species: String = str(c_dict.get("species_id", ""))
+		var species_val: StringName = SpeciesCatalog.validate_species_id(StringName(raw_species)) if raw_species != "" else SpeciesCatalog.DEFAULT_SPECIES_ID
 		var c: CitizenState = CitizenState.new(
 			c_dict["id"],
 			Vector2i(c_pos_arr[0], c_pos_arr[1]),
-			StringName(c_dict["role_id"])
+			StringName(c_dict["role_id"]),
+			species_val
 		)
 		c.home_building_id = int(c_dict.get("home_building_id", 0))
 		c.workplace_id = int(c_dict.get("workplace_id", 0))

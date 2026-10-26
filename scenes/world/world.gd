@@ -80,9 +80,7 @@ func _init_simulation() -> void:
 	# Spawn initial workforce: 10 citizens
 	for i in range(10):
 		var c_pos: Vector2i = th_pos + Vector2i(i % 3 - 1, i / 3 + 4)
-		var citizen: CitizenState = CitizenState.new(next_entity_id, c_pos)
-		next_entity_id += 1
-		citizens.append(citizen)
+		var citizen: CitizenState = spawn_citizen(c_pos)
 		
 		# Assign first 2 citizens as dedicated haulers
 		if i < 2:
@@ -1525,6 +1523,8 @@ func get_workforce_citizens_data() -> Array[Dictionary]:
 
 		list.append({
 			"id": c.id,
+			"species_id": c.species_id,
+			"species_name": SpeciesCatalog.get_display_name(c.species_id),
 			"role": c.role_id,
 			"workplace_id": c.workplace_id,
 			"workplace_str": wp_str,
@@ -1554,6 +1554,8 @@ func get_assigned_citizens_for_building(building: BuildingState) -> Array[Dictio
 			var s_fac: float = c.get_skill_factor(relevant_skill) if relevant_skill != &"" else 1.0
 			list.append({
 				"id": c.id,
+				"species_id": c.species_id,
+				"species_name": SpeciesCatalog.get_display_name(c.species_id),
 				"role": c.role_id,
 				"state_str": state_str,
 				"skill_name": relevant_skill,
@@ -1561,6 +1563,19 @@ func get_assigned_citizens_for_building(building: BuildingState) -> Array[Dictio
 				"skill_factor": s_fac
 			})
 	return list
+
+func spawn_citizen(pos: Vector2i, role: StringName = &"unassigned", species: StringName = &"") -> CitizenState:
+	var s_id: StringName = SpeciesCatalog.validate_species_id(species) if species != &"" else SpeciesCatalog.DEFAULT_SPECIES_ID
+	var citizen: CitizenState = CitizenState.new(next_entity_id, pos, role, s_id)
+	next_entity_id += 1
+	citizens.append(citizen)
+	return citizen
+
+func spawn_citizen_with_distribution(pos: Vector2i, role: StringName = &"unassigned", rng_seed: int = 0) -> CitizenState:
+	var s_ids: Array[StringName] = SpeciesCatalog.SPECIES_IDS
+	var pick_idx: int = absi(rng_seed) % s_ids.size()
+	var s_id: StringName = s_ids[pick_idx]
+	return spawn_citizen(pos, role, s_id)
 
 func unassign_citizen(citizen: CitizenState) -> void:
 	if citizen == null or citizen.workplace_id <= 0:
@@ -1627,9 +1642,10 @@ func auto_staff_workplaces() -> void:
 			for citizen in citizens:
 				if citizen.role_id != &"unassigned" or citizen.workplace_id > 0 or citizen.is_resting:
 					continue
-				var s_val: float = citizen.get_skill(relevant_skill) if relevant_skill != &"" else 50.0
+				var s_fac: float = citizen.get_skill_factor(relevant_skill) if relevant_skill != &"" else 1.0
+				var eff_skill: float = s_fac * 100.0
 				var dist: float = float(absi(citizen.position_tile.x - workplace.tile_origin.x) + absi(citizen.position_tile.y - workplace.tile_origin.y))
-				var score: float = s_val * 10.0 - dist
+				var score: float = eff_skill * 10.0 - dist
 				if score > best_score:
 					best_score = score
 					best_citizen = citizen
