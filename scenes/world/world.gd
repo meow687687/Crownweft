@@ -980,6 +980,8 @@ func _simulation_tick() -> void:
 	_tick_active_wars()
 	if regional_world != null:
 		regional_world.tick_regional_armies(current_tick, diplomacy)
+		regional_world.detect_and_resolve_engagements(diplomacy, current_tick)
+		regional_world.update_campaign_objectives(diplomacy, current_tick)
 
 	# Periodic check for social status advancement
 	if current_tick % 20 == 0:
@@ -1589,6 +1591,8 @@ func _update_world_map_ui() -> void:
 		"regions": regional_world.regions,
 		"routes": regional_world.routes,
 		"armies": regional_world.armies,
+		"objectives": regional_world.objectives,
+		"engagements": regional_world.engagements,
 		"selected_region_id": regional_world.selected_region_id,
 		"diplomacy": diplomacy,
 		"active_wars": diplomacy.active_wars if diplomacy != null else []

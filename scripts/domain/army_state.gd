@@ -68,7 +68,7 @@ func _calculate_strength() -> int:
 	var total: int = 0
 	for k in unit_roster:
 		total += int(unit_roster[k])
-	return maxi(total, 1)
+	return total
 
 func can_transition_to(target: StringName) -> bool:
 	if status == target:
@@ -78,9 +78,9 @@ func can_transition_to(target: StringName) -> bool:
 
 	match status:
 		STATUS_GARRISONED:
-			return target in [STATUS_PREPARING, STATUS_MARCHING, STATUS_DISBANDED]
+			return target in [STATUS_PREPARING, STATUS_MARCHING, STATUS_ENGAGED, STATUS_RETREATING, STATUS_DISBANDED, STATUS_DESTROYED]
 		STATUS_PREPARING:
-			return target in [STATUS_MARCHING, STATUS_GARRISONED, STATUS_DISBANDED]
+			return target in [STATUS_MARCHING, STATUS_GARRISONED, STATUS_ENGAGED, STATUS_DISBANDED, STATUS_DESTROYED]
 		STATUS_MARCHING:
 			return target in [STATUS_SUPPLY_STRAINED, STATUS_ENGAGED, STATUS_RETREATING, STATUS_GARRISONED, STATUS_DESTROYED]
 		STATUS_SUPPLY_STRAINED:
@@ -88,7 +88,7 @@ func can_transition_to(target: StringName) -> bool:
 		STATUS_ENGAGED:
 			return target in [STATUS_MARCHING, STATUS_RETREATING, STATUS_GARRISONED, STATUS_DESTROYED]
 		STATUS_RETREATING:
-			return target in [STATUS_GARRISONED, STATUS_SUPPLY_STRAINED, STATUS_DESTROYED]
+			return target in [STATUS_GARRISONED, STATUS_MARCHING, STATUS_SUPPLY_STRAINED, STATUS_DESTROYED]
 		_:
 			return false
 
@@ -99,6 +99,32 @@ func transition_to(target: StringName, reason: String, current_tick: int) -> boo
 	status = target
 	record_event(current_tick, "status_change", "Transitioned from %s to %s: %s" % [prev, target, reason])
 	return true
+
+func apply_casualties(losses: int, reason: String, current_tick: int) -> int:
+	if losses <= 0:
+		return 0
+	var actual_losses: int = mini(losses, strength)
+	var remaining_to_remove: int = actual_losses
+	var keys: Array = unit_roster.keys()
+	for k in keys:
+		if remaining_to_remove <= 0:
+			break
+		var count: int = int(unit_roster[k])
+		var deduct: int = mini(count, remaining_to_remove)
+		unit_roster[k] = count - deduct
+		remaining_to_remove -= deduct
+	
+	var total: int = 0
+	for k in unit_roster:
+		total += int(unit_roster[k])
+	strength = total
+	
+	record_event(current_tick, "casualties", "Lost %d troops (%s). Remaining strength: %d" % [actual_losses, reason, strength])
+	
+	if strength <= 0:
+		transition_to(STATUS_DESTROYED, "All units eliminated in battle", current_tick)
+	
+	return actual_losses
 
 func consume_supplies(is_moving: bool, current_tick: int) -> void:
 	var rate: float = SUPPLY_RATE_MARCHING if is_moving else SUPPLY_RATE_GARRISONED

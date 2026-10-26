@@ -2300,6 +2300,87 @@ func _render_region_details(reg: RegionState) -> void:
 		no_armies.add_theme_color_override("font_color", UITheme.COLOR_TEXT_MUTED)
 		box_region_details.add_child(no_armies)
 
+	# Active Campaign Objectives
+	var objectives: Dictionary = _last_world_map_data.get("objectives", {})
+	var relevant_objectives: Array = []
+	for obj in objectives.values():
+		if obj.faction_id == FactionCatalog.FACTION_PLAYER and obj.status == CampaignObjective.STATUS_IN_PROGRESS:
+			if obj.target_region_id == reg.id or obj.target_region_id == &"":
+				relevant_objectives.append(obj)
+
+	if not relevant_objectives.is_empty():
+		box_region_details.add_child(HSeparator.new())
+		var obj_hdr := Label.new()
+		obj_hdr.text = "ACTIVE CAMPAIGN OBJECTIVES"
+		obj_hdr.add_theme_font_size_override("font_size", 11)
+		obj_hdr.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+		box_region_details.add_child(obj_hdr)
+
+		for obj in relevant_objectives:
+			var obj_card := PanelContainer.new()
+			obj_card.add_theme_stylebox_override("panel", UITheme.create_panel_style(Color(0.14, 0.16, 0.22, 0.95), UITheme.COLOR_ACCENT_GOLD, 1, 4))
+			box_region_details.add_child(obj_card)
+
+			var obj_vbox := VBoxContainer.new()
+			obj_vbox.add_theme_constant_override("separation", 2)
+			obj_card.add_child(obj_vbox)
+
+			var obj_title := Label.new()
+			obj_title.text = "🎯 %s" % obj.description
+			obj_title.add_theme_font_size_override("font_size", 10)
+			obj_title.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+			obj_vbox.add_child(obj_title)
+
+			var obj_type_lbl := Label.new()
+			obj_type_lbl.text = "Type: %s  |  Status: IN PROGRESS" % str(obj.type).replace("_", " ").to_upper()
+			obj_type_lbl.add_theme_font_size_override("font_size", 9)
+			obj_type_lbl.add_theme_color_override("font_color", Color("#7bed9f"))
+			obj_vbox.add_child(obj_type_lbl)
+
+	# Recent Engagements
+	var engagements: Dictionary = _last_world_map_data.get("engagements", {})
+	var reg_engagements: Array = []
+	for eng in engagements.values():
+		if eng.region_id == reg.id:
+			reg_engagements.append(eng)
+
+	if not reg_engagements.is_empty():
+		box_region_details.add_child(HSeparator.new())
+		var eng_hdr := Label.new()
+		eng_hdr.text = "REGIONAL ENGAGEMENTS & BATTLES"
+		eng_hdr.add_theme_font_size_override("font_size", 11)
+		eng_hdr.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+		box_region_details.add_child(eng_hdr)
+
+		for eng in reg_engagements:
+			var eng_card := PanelContainer.new()
+			var outcome_col: Color = UITheme.COLOR_ACCENT_GOLD
+			if eng.outcome == RegionalEngagement.OUTCOME_ATTACKER_VICTORY:
+				outcome_col = Color("#e74c3c")
+			elif eng.outcome == RegionalEngagement.OUTCOME_DEFENDER_VICTORY:
+				outcome_col = Color("#2ecc71")
+			eng_card.add_theme_stylebox_override("panel", UITheme.create_panel_style(Color(0.12, 0.14, 0.18, 0.95), outcome_col, 1, 4))
+			box_region_details.add_child(eng_card)
+
+			var eng_vbox := VBoxContainer.new()
+			eng_vbox.add_theme_constant_override("separation", 2)
+			eng_card.add_child(eng_vbox)
+
+			var eng_title := Label.new()
+			eng_title.text = "⚔ Battle (Tick %d) - %s" % [eng.resolved_tick, str(eng.outcome).replace("_", " ").to_upper()]
+			eng_title.add_theme_font_size_override("font_size", 10)
+			eng_title.add_theme_color_override("font_color", outcome_col)
+			eng_vbox.add_child(eng_title)
+
+			var eng_stats := Label.new()
+			eng_stats.text = "%s: -%d losses  |  %s: -%d losses" % [
+				_get_faction_display_name(eng.attacker_faction_id), eng.attacker_casualties,
+				_get_faction_display_name(eng.defender_faction_id), eng.defender_casualties
+			]
+			eng_stats.add_theme_font_size_override("font_size", 9)
+			eng_stats.add_theme_color_override("font_color", Color("#cbd5e1"))
+			eng_vbox.add_child(eng_stats)
+
 	# Faction Relations / Active Wars
 	var diplomacy: DiplomacyState = _last_world_map_data.get("diplomacy", null)
 	if diplomacy != null and reg.controlling_faction != &"" and reg.controlling_faction != FactionCatalog.FACTION_PLAYER:

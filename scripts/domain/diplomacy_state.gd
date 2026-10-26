@@ -83,6 +83,15 @@ func remove_proposal(id: int) -> void:
 	if idx >= 0:
 		pending_proposals.remove_at(idx)
 
+func get_war_by_id(war_id: int) -> WarState:
+	for w in active_wars:
+		if w.id == war_id:
+			return w
+	for h in war_history:
+		if h is WarState and h.id == war_id:
+			return h
+	return null
+
 func get_active_war(fac_a: StringName, fac_b: StringName) -> WarState:
 	for w in active_wars:
 		if w.is_active():

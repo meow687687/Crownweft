@@ -5,6 +5,10 @@ var regions: Dictionary = {} # StringName -> RegionState
 var routes: Array[RegionRoute] = []
 var armies: Dictionary = {} # int -> ArmyState
 var next_army_id: int = 1
+var objectives: Dictionary = {} # int -> CampaignObjective
+var next_objective_id: int = 1
+var engagements: Dictionary = {} # int -> RegionalEngagement
+var next_engagement_id: int = 1
 var selected_region_id: StringName = &""
 
 func _init() -> void:
@@ -466,7 +470,7 @@ func tick_regional_armies(current_tick: int, diplomacy: DiplomacyState = null) -
 		if not army.is_active():
 			continue
 
-		var is_marching: bool = (army.status in [ArmyState.STATUS_MARCHING, ArmyState.STATUS_SUPPLY_STRAINED] and not army.route_path.is_empty())
+		var is_marching: bool = (army.status in [ArmyState.STATUS_MARCHING, ArmyState.STATUS_SUPPLY_STRAINED, ArmyState.STATUS_RETREATING] and not army.route_path.is_empty())
 		army.consume_supplies(is_marching, current_tick)
 
 		# Supply line connectivity check
@@ -528,12 +532,378 @@ func tick_regional_armies(current_tick: int, diplomacy: DiplomacyState = null) -
 				# Final destination reached!
 				army.route_path.clear()
 				army.path_index = 0
-				army.transition_to(ArmyState.STATUS_GARRISONED, "Arrived at destination %s" % str(to_node), current_tick)
+				var arr_reason: String = "Retreat completed at %s" % str(to_node) if army.status == ArmyState.STATUS_RETREATING else ("Arrived at destination %s" % str(to_node))
+				army.transition_to(ArmyState.STATUS_GARRISONED, arr_reason, current_tick)
 			else:
 				# Setup next segment
 				var next_target: StringName = army.route_path[army.path_index + 1]
 				var next_route: RegionRoute = get_route_between(army.current_region_id, next_target)
 				army.segment_total_ticks = next_route.travel_ticks if next_route != null else 60
+
+# =========================================================================
+# CAMPAIGN OBJECTIVES & REGIONAL ENGAGEMENTS
+# =========================================================================
+
+func get_objective(obj_id: int) -> CampaignObjective:
+	return objectives.get(obj_id, null)
+
+func get_active_objectives(faction: StringName = &"") -> Array[CampaignObjective]:
+	var res: Array[CampaignObjective] = []
+	for obj in objectives.values():
+		if obj.status == CampaignObjective.STATUS_IN_PROGRESS:
+			if faction == &"" or obj.faction_id == faction:
+				res.append(obj)
+	return res
+
+func create_objective(
+	p_faction: StringName,
+	p_type: StringName,
+	p_target_region: StringName = &"",
+	p_target_army: int = 0,
+	p_war_id: int = -1,
+	p_tick: int = 0
+) -> CampaignObjective:
+	var desc: String = ""
+	match p_type:
+		CampaignObjective.TYPE_DEFEND_REGION:
+			desc = "Defend %s against hostile incursions" % str(p_target_region)
+		CampaignObjective.TYPE_OCCUPY_REGION:
+			desc = "Occupy and secure %s" % str(p_target_region)
+		CampaignObjective.TYPE_CONTEST_REGION:
+			desc = "Contest control of %s" % str(p_target_region)
+		CampaignObjective.TYPE_REPEL_ARMY:
+			desc = "Repel hostile army %d from the theater" % p_target_army
+		CampaignObjective.TYPE_SECURE_ROUTE:
+			desc = "Secure supply and travel route through %s" % str(p_target_region)
+		_:
+			desc = "Military objective for %s" % str(p_faction)
+
+	var obj := CampaignObjective.new(
+		next_objective_id,
+		p_faction,
+		p_type,
+		desc,
+		p_target_region,
+		p_target_army,
+		p_war_id,
+		p_tick
+	)
+	next_objective_id += 1
+	objectives[obj.id] = obj
+	return obj
+
+func get_engagement(eng_id: int) -> RegionalEngagement:
+	return engagements.get(eng_id, null)
+
+func get_engagements_for_region(region_id: StringName) -> Array[RegionalEngagement]:
+	var res: Array[RegionalEngagement] = []
+	for eng in engagements.values():
+		if eng.region_id == region_id:
+			res.append(eng)
+	return res
+
+func detect_and_resolve_engagements(diplomacy: DiplomacyState, current_tick: int) -> Array[RegionalEngagement]:
+	var resolved_engagements: Array[RegionalEngagement] = []
+	if diplomacy == null:
+		return resolved_engagements
+
+	for reg_id in regions:
+		var reg: RegionState = regions[reg_id]
+		var armies_in_reg: Array[ArmyState] = []
+		for a in armies.values():
+			if a.is_active() and a.current_region_id == reg_id and a.status != ArmyState.STATUS_RETREATING and a.status != ArmyState.STATUS_ENGAGED:
+				armies_in_reg.append(a)
+
+		if armies_in_reg.size() < 2:
+			continue
+
+		var factions_present: Array[StringName] = []
+		for a in armies_in_reg:
+			if not factions_present.has(a.faction_id):
+				factions_present.append(a.faction_id)
+
+		if factions_present.size() < 2:
+			continue
+
+		for i in range(factions_present.size()):
+			var f_a: StringName = factions_present[i]
+			for j in range(i + 1, factions_present.size()):
+				var f_b: StringName = factions_present[j]
+				var war: WarState = diplomacy.get_active_war(f_a, f_b)
+				if war == null or war.status != WarState.STATUS_WAR:
+					continue
+
+				var army_a: ArmyState = null
+				var army_b: ArmyState = null
+				for a in armies_in_reg:
+					if a.faction_id == f_a and a.is_active() and a.status != ArmyState.STATUS_RETREATING and army_a == null:
+						army_a = a
+					elif a.faction_id == f_b and a.is_active() and a.status != ArmyState.STATUS_RETREATING and army_b == null:
+						army_b = a
+
+				if army_a == null or army_b == null:
+					continue
+
+				# Check cooldown between these armies in this region (30 ticks)
+				var recently_engaged: bool = false
+				for prev_eng in engagements.values():
+					if prev_eng.region_id == reg_id and prev_eng.is_resolved():
+						if (prev_eng.attacker_army_id == army_a.id and prev_eng.defender_army_id == army_b.id) or (prev_eng.attacker_army_id == army_b.id and prev_eng.defender_army_id == army_a.id):
+							if current_tick - prev_eng.resolution_tick < 30:
+								recently_engaged = true
+								break
+				if recently_engaged:
+					continue
+
+				var att: ArmyState = army_a
+				var def: ArmyState = army_b
+				if reg.get_effective_controller() == f_a:
+					def = army_a
+					att = army_b
+				elif reg.get_effective_controller() == f_b:
+					def = army_b
+					att = army_a
+				elif army_a.status == ArmyState.STATUS_GARRISONED and army_b.status != ArmyState.STATUS_GARRISONED:
+					def = army_a
+					att = army_b
+				elif army_b.status == ArmyState.STATUS_GARRISONED and army_a.status != ArmyState.STATUS_GARRISONED:
+					def = army_b
+					att = army_a
+
+				var eng := RegionalEngagement.new(
+					next_engagement_id,
+					reg_id,
+					att.id,
+					att.faction_id,
+					def.id,
+					def.faction_id,
+					war.id,
+					current_tick
+				)
+				next_engagement_id += 1
+				engagements[eng.id] = eng
+
+				att.transition_to(ArmyState.STATUS_ENGAGED, "Engaging %s forces at %s" % [str(def.faction_id), reg.display_name], current_tick)
+				def.transition_to(ArmyState.STATUS_ENGAGED, "Defending against %s at %s" % [str(att.faction_id), reg.display_name], current_tick)
+
+				var att_supp_factor: float = 1.15 if att.get_supplies(&"grain") >= 15.0 else (0.70 if att.get_supplies(&"grain") <= 0.0 or att.status == ArmyState.STATUS_SUPPLY_STRAINED else 1.0)
+				var def_supp_factor: float = 1.15 if def.get_supplies(&"grain") >= 15.0 else (0.70 if def.get_supplies(&"grain") <= 0.0 or def.status == ArmyState.STATUS_SUPPLY_STRAINED else 1.0)
+				var terrain_factor: float = reg.defensive_advantage
+				eng.record_initial_metrics(att.strength, def.strength, att_supp_factor, def_supp_factor, terrain_factor)
+
+				var result: Dictionary = resolve_regional_engagement(eng.id, diplomacy, current_tick)
+				if result.get("ok", false):
+					resolved_engagements.append(eng)
+
+	return resolved_engagements
+
+func resolve_regional_engagement(eng_id: int, diplomacy: DiplomacyState, current_tick: int) -> Dictionary:
+	var eng: RegionalEngagement = engagements.get(eng_id, null)
+	if eng == null:
+		return {"ok": false, "reason": "Engagement not found"}
+	if eng.state == RegionalEngagement.STATE_RESOLVED:
+		return {"ok": false, "reason": "Engagement already resolved"}
+
+	var att: ArmyState = armies.get(eng.attacker_army_id, null)
+	var def: ArmyState = armies.get(eng.defender_army_id, null)
+	var reg: RegionState = regions.get(eng.region_id, null)
+
+	if att == null or def == null:
+		eng.resolve_engagement(RegionalEngagement.OUTCOME_STALEMATE, 0, 0, current_tick)
+		return {"ok": false, "reason": "Missing army participants"}
+
+	# Power calculations
+	var P_att: float = float(att.strength) * eng.attacker_supply_factor
+	var P_def: float = float(def.strength) * eng.defender_supply_factor * eng.terrain_defensive_factor
+	var total_P: float = P_att + P_def
+	var ratio: float = P_att / maxf(1.0, total_P)
+
+	var outcome: StringName = RegionalEngagement.OUTCOME_STALEMATE
+	if ratio > 0.55:
+		outcome = RegionalEngagement.OUTCOME_ATTACKER_VICTORY
+	elif ratio < 0.45:
+		outcome = RegionalEngagement.OUTCOME_DEFENDER_VICTORY
+	else:
+		outcome = RegionalEngagement.OUTCOME_STALEMATE
+
+	# Bounded casualties (20% to 45%)
+	var att_loss_pct: float = clampf(0.20 + (1.0 - ratio) * 0.25, 0.20, 0.45)
+	var def_loss_pct: float = clampf(0.20 + ratio * 0.25, 0.20, 0.45)
+
+	var att_losses: int = clampi(int(round(float(att.strength) * att_loss_pct)), 1, att.strength)
+	var def_losses: int = clampi(int(round(float(def.strength) * def_loss_pct)), 1, def.strength)
+
+	# Apply casualties exactly once
+	var actual_att_losses: int = att.apply_casualties(att_losses, "Battle of %s" % (reg.display_name if reg != null else str(eng.region_id)), current_tick)
+	var actual_def_losses: int = def.apply_casualties(def_losses, "Battle of %s" % (reg.display_name if reg != null else str(eng.region_id)), current_tick)
+
+	# Register single casualty accounting in WarState
+	var war: WarState = null
+	if diplomacy != null:
+		war = diplomacy.get_war_by_id(eng.war_id)
+		if war == null:
+			war = diplomacy.get_active_war(att.faction_id, def.faction_id)
+
+	if war != null:
+		war.record_casualty(att.faction_id, actual_att_losses)
+		war.record_casualty(def.faction_id, actual_def_losses)
+		var battle_desc: String = "Battle of %s: %s (%d casualties) vs %s (%d casualties)" % [
+			reg.display_name if reg != null else str(eng.region_id),
+			att.name, actual_att_losses,
+			def.name, actual_def_losses
+		]
+		war.record_battle(current_tick, battle_desc, actual_att_losses, actual_def_losses, outcome)
+
+	if diplomacy != null:
+		var outcome_text: String = "attacker victory" if outcome == RegionalEngagement.OUTCOME_ATTACKER_VICTORY else ("defender victory" if outcome == RegionalEngagement.OUTCOME_DEFENDER_VICTORY else "stalemate")
+		diplomacy.add_chronicle(current_tick, "Engagement at %s concluded with %s: %s lost %d, %s lost %d troops." % [
+			reg.display_name if reg != null else str(eng.region_id),
+			outcome_text,
+			att.name, actual_att_losses,
+			def.name, actual_def_losses
+		], &"battle")
+
+	# Post-engagement consequences & retreat handling
+	if outcome == RegionalEngagement.OUTCOME_ATTACKER_VICTORY:
+		if att.strength > 0:
+			att.transition_to(ArmyState.STATUS_GARRISONED, "Victorious in battle at %s" % (reg.display_name if reg != null else ""), current_tick)
+		if reg != null:
+			if reg.controlling_faction != att.faction_id:
+				reg.set_occupation(att.faction_id, "Occupied following military victory in battle", current_tick)
+			else:
+				reg.clear_occupation("Liberated by friendly forces", current_tick)
+		if def.strength > 0:
+			_order_retreat(def, reg, current_tick)
+
+	elif outcome == RegionalEngagement.OUTCOME_DEFENDER_VICTORY:
+		if def.strength > 0:
+			def.transition_to(ArmyState.STATUS_GARRISONED, "Successfully defended %s" % (reg.display_name if reg != null else ""), current_tick)
+		if reg != null and reg.occupying_faction == att.faction_id:
+			reg.clear_occupation("Occupier repelled by defender victory", current_tick)
+		if att.strength > 0:
+			_order_retreat(att, reg, current_tick)
+
+	else: # STALEMATE
+		if att.strength > 0:
+			att.transition_to(ArmyState.STATUS_GARRISONED, "Stalemate at %s" % (reg.display_name if reg != null else ""), current_tick)
+		if def.strength > 0:
+			def.transition_to(ArmyState.STATUS_GARRISONED, "Stalemate at %s" % (reg.display_name if reg != null else ""), current_tick)
+		if reg != null:
+			reg.set_contested(true)
+
+	eng.resolve_engagement(outcome, actual_att_losses, actual_def_losses, current_tick)
+
+	return {
+		"ok": true,
+		"engagement_id": eng_id,
+		"outcome": outcome,
+		"attacker_losses": actual_att_losses,
+		"defender_losses": actual_def_losses
+	}
+
+func _order_retreat(army: ArmyState, current_region: RegionState, current_tick: int) -> void:
+	if current_region == null:
+		return
+
+	var best_dest: StringName = &""
+	var neighbors: Array[StringName] = current_region.neighbors
+
+	# Priority 1: Adjacent region controlled by own faction with open route
+	for n_id in neighbors:
+		var n_reg: RegionState = regions.get(n_id, null)
+		var r: RegionRoute = get_route_between(current_region.id, n_id)
+		if n_reg != null and r != null and r.is_open:
+			if n_reg.controlling_faction == army.faction_id and n_reg.occupying_faction == &"":
+				best_dest = n_id
+				break
+
+	# Priority 2: Adjacent unclaimed or buffer region with open route
+	if best_dest == &"":
+		for n_id in neighbors:
+			var n_reg: RegionState = regions.get(n_id, null)
+			var r: RegionRoute = get_route_between(current_region.id, n_id)
+			if n_reg != null and r != null and r.is_open:
+				if n_reg.controlling_faction == &"":
+					best_dest = n_id
+					break
+
+	# Priority 3: Any adjacent region with open route
+	if best_dest == &"":
+		for n_id in neighbors:
+			var r: RegionRoute = get_route_between(current_region.id, n_id)
+			if r != null and r.is_open:
+				best_dest = n_id
+				break
+
+	if best_dest != &"":
+		army.destination_region_id = best_dest
+		army.route_path = [current_region.id, best_dest]
+		army.path_index = 0
+		army.segment_ticks_progress = 0.0
+		var route: RegionRoute = get_route_between(current_region.id, best_dest)
+		army.segment_total_ticks = route.travel_ticks if route != null else 60
+		army.transition_to(ArmyState.STATUS_RETREATING, "Retreating to %s" % str(best_dest), current_tick)
+	else:
+		army.apply_casualties(army.strength, "Cut off with no retreat route available", current_tick)
+
+func update_campaign_objectives(diplomacy: DiplomacyState, current_tick: int) -> void:
+	for obj in objectives.values():
+		if obj.status != CampaignObjective.STATUS_IN_PROGRESS:
+			continue
+
+		var war: WarState = null
+		if diplomacy != null and obj.war_id > 0:
+			war = diplomacy.get_war_by_id(obj.war_id)
+
+		var reg: RegionState = regions.get(obj.target_region_id, null)
+
+		match obj.type:
+			CampaignObjective.TYPE_DEFEND_REGION:
+				if reg != null:
+					if reg.occupying_faction != &"" and reg.occupying_faction != obj.faction_id:
+						obj.fail("Target region was occupied by enemy forces", current_tick)
+					elif war != null and not war.is_active():
+						if reg.controlling_faction == obj.faction_id and reg.occupying_faction == &"":
+							obj.complete("Region defended successfully through campaign conclusion", current_tick)
+						else:
+							obj.fail("Region lost at campaign conclusion", current_tick)
+					elif obj.target_tick > 0 and current_tick >= obj.target_tick:
+						if reg.controlling_faction == obj.faction_id and reg.occupying_faction == &"":
+							obj.complete("Region defended for designated duration", current_tick)
+
+			CampaignObjective.TYPE_OCCUPY_REGION:
+				if reg != null:
+					if reg.occupying_faction == obj.faction_id:
+						obj.complete("Target region occupied successfully", current_tick)
+					elif war != null and not war.is_active():
+						obj.fail("War concluded before target region could be occupied", current_tick)
+
+			CampaignObjective.TYPE_CONTEST_REGION:
+				if reg != null:
+					if reg.is_contested or reg.occupying_faction == obj.faction_id:
+						obj.complete("Target region successfully contested", current_tick)
+					elif war != null and not war.is_active():
+						obj.fail("War ended before region contested", current_tick)
+
+			CampaignObjective.TYPE_REPEL_ARMY:
+				var target_army: ArmyState = armies.get(obj.target_army_id, null)
+				if target_army == null or not target_army.is_active() or target_army.status == ArmyState.STATUS_DESTROYED:
+					obj.complete("Target hostile army destroyed", current_tick)
+				elif reg != null and target_army.current_region_id != reg.id and target_army.status == ArmyState.STATUS_RETREATING:
+					obj.complete("Target hostile army repelled from region", current_tick)
+				elif war != null and not war.is_active():
+					obj.complete("War concluded with enemy force repelled", current_tick)
+
+			CampaignObjective.TYPE_SECURE_ROUTE:
+				if reg != null:
+					var secure: bool = true
+					var r_list: Array[RegionRoute] = get_routes_for_region(reg.id)
+					for r in r_list:
+						if not r.is_open:
+							secure = false
+							break
+					if secure and reg.controlling_faction == obj.faction_id:
+						obj.complete("Supply route secured", current_tick)
 
 func serialize() -> Dictionary:
 	var reg_dict: Dictionary = {}
@@ -545,19 +915,31 @@ func serialize() -> Dictionary:
 	var army_dict: Dictionary = {}
 	for k in armies:
 		army_dict[str(k)] = armies[k].serialize()
+	var obj_dict: Dictionary = {}
+	for k in objectives:
+		obj_dict[str(k)] = objectives[k].serialize()
+	var eng_dict: Dictionary = {}
+	for k in engagements:
+		eng_dict[str(k)] = engagements[k].serialize()
 
 	return {
 		"selected_region_id": str(selected_region_id),
 		"next_army_id": next_army_id,
+		"next_objective_id": next_objective_id,
+		"next_engagement_id": next_engagement_id,
 		"regions": reg_dict,
 		"routes": route_arr,
-		"armies": army_dict
+		"armies": army_dict,
+		"objectives": obj_dict,
+		"engagements": eng_dict
 	}
 
 static func deserialize(data: Dictionary) -> RegionalWorldState:
 	var state := RegionalWorldState.new()
 	state.selected_region_id = StringName(data.get("selected_region_id", ""))
 	state.next_army_id = int(data.get("next_army_id", 1))
+	state.next_objective_id = int(data.get("next_objective_id", 1))
+	state.next_engagement_id = int(data.get("next_engagement_id", 1))
 
 	state.regions.clear()
 	var raw_reg: Dictionary = data.get("regions", {})
@@ -583,5 +965,21 @@ static func deserialize(data: Dictionary) -> RegionalWorldState:
 		state.armies[army.id] = army
 		if army.id >= state.next_army_id:
 			state.next_army_id = army.id + 1
+
+	state.objectives.clear()
+	var raw_objs: Dictionary = data.get("objectives", {})
+	for k in raw_objs:
+		var obj: CampaignObjective = CampaignObjective.deserialize(raw_objs[k])
+		state.objectives[obj.id] = obj
+		if obj.id >= state.next_objective_id:
+			state.next_objective_id = obj.id + 1
+
+	state.engagements.clear()
+	var raw_engs: Dictionary = data.get("engagements", {})
+	for k in raw_engs:
+		var eng: RegionalEngagement = RegionalEngagement.deserialize(raw_engs[k])
+		state.engagements[eng.id] = eng
+		if eng.id >= state.next_engagement_id:
+			state.next_engagement_id = eng.id + 1
 
 	return state

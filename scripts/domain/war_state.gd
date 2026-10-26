@@ -89,9 +89,9 @@ func transition_to(new_status: StringName, current_tick: int, reason_msg: String
 
 	return true
 
-func record_casualty(faction: StringName) -> void:
+func record_casualty(faction: StringName, count: int = 1) -> void:
 	var key: String = str(faction)
-	casualties[key] = int(casualties.get(key, 0)) + 1
+	casualties[key] = int(casualties.get(key, 0)) + count
 
 func record_battle(tick: int, desc: String, att_losses: int, def_losses: int, res: StringName) -> void:
 	battles.append({
