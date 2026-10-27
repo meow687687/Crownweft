@@ -1032,8 +1032,12 @@ func show_citizen_details(citizen: CitizenState, workplace: BuildingState = null
 
 	# Activity / Status explanation
 	if citizen.is_resting:
-		label_inspector_status.text = "STATUS: RESTING — Energy %d/100" % int(citizen.energy)
-		label_inspector_status.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
+		if citizen.home_building_id <= 0:
+			label_inspector_status.text = "STATUS: RESTING (OUTDOORS) — Energy %d/100 (Homeless Fallback)" % int(citizen.energy)
+			label_inspector_status.add_theme_color_override("font_color", Color.ORANGE)
+		else:
+			label_inspector_status.text = "STATUS: RESTING (AT HOME) — Energy %d/100" % int(citizen.energy)
+			label_inspector_status.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
 	elif citizen.current_block_reason == &"Cannot rest — no valid home assigned":
 		label_inspector_status.text = "STATUS: EXHAUSTED — Cannot rest (no valid home assigned)"
 		label_inspector_status.add_theme_color_override("font_color", UITheme.COLOR_RED_ALERT)
@@ -1094,10 +1098,12 @@ func show_citizen_details(citizen: CitizenState, workplace: BuildingState = null
 	if workplace != null:
 		var wp_def: Dictionary = BuildingCatalog.get_all_defs().get(workplace.definition_id, {})
 		wp_name = "%s (#%d)" % [wp_def.get("display_name", str(workplace.definition_id)), workplace.entity_id]
-	var hm_name: String = "None (Homeless — Cannot recover energy)"
+	var hm_name: String = "None (Homeless — Emergency outdoor rest available)"
 	if home != null:
 		var hm_def: Dictionary = BuildingCatalog.get_all_defs().get(home.definition_id, {})
 		hm_name = "%s (#%d)" % [hm_def.get("display_name", str(home.definition_id)), home.entity_id]
+	elif citizen.is_resting:
+		hm_name = "None (Homeless — Resting outdoors at fallback rate)"
 
 	var food_str: String = "Fed"
 	if citizen.food_state == CitizenState.FoodState.HUNGRY:

@@ -284,8 +284,8 @@ func test_10_homeless_citizen_cannot_rest_diagnostic() -> void:
 	
 	world_scene._update_housing_and_rest()
 	assert_true(c.is_resting, "Citizen wants to rest")
-	assert_eq(c.current_block_reason, &"Cannot rest — no valid home assigned", "Must expose clear diagnostic reason when homeless")
-	assert_eq(c.energy, 10.0, "Homeless citizen cannot recover energy without a home")
+	assert_eq(c.current_block_reason, &"Resting outdoors — no valid home assigned", "Must expose clear diagnostic reason when homeless")
+	assert_eq(c.energy, 10.5, "Homeless citizen recovers energy via fallback rate (0.5/tick)")
 	world_scene.queue_free()
 	print("✓ Test 10: Homeless citizen exposed diagnostic reason and does not teleport PASSED")
 

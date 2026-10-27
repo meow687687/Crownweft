@@ -23,6 +23,7 @@ const EXHAUSTION_THRESHOLD: float = 20.0
 const RECOVERY_THRESHOLD: float = 80.0
 const WORK_ENERGY_DRAIN: float = 0.5
 const REST_ENERGY_RECOVERY: float = 2.0
+const HOMELESS_REST_ENERGY_RECOVERY: float = 0.5
 const IDLE_ENERGY_DRAIN: float = 0.02
 
 @export var id: int = 0

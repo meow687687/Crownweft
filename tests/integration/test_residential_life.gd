@@ -186,8 +186,8 @@ func test_4_homeless_rest_blocker_and_energy_recovery() -> void:
 	# Tick housing and rest
 	w._update_housing_and_rest()
 	_assert(c.is_resting, "Exhausted citizen must enter resting state")
-	_assert_eq(c.current_block_reason, &"Cannot rest — no valid home assigned", "Must receive diagnostic blocker")
-	_assert_eq(c.energy, 10.0, "Homeless citizen must not recover energy")
+	_assert_eq(c.current_block_reason, &"Resting outdoors — no valid home assigned", "Must receive diagnostic blocker")
+	_assert_eq(c.energy, 10.5, "Homeless citizen recovers energy through fallback rate (0.5/tick)")
 
 	# Now place and activate a house
 	var house: BuildingState = w.place_building(&"house", Vector2i(25, 25), true)

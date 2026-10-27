@@ -1323,10 +1323,16 @@ func _update_housing_and_rest() -> void:
 						break
 
 			if home == null:
-				c.current_block_reason = &"Cannot rest — no valid home assigned"
+				c.current_block_reason = &"Resting outdoors — no valid home assigned"
 				c.move_state = CitizenState.MoveState.IDLE
 				c.path.clear()
 				c.target_tile = c.position_tile
+				c.restore_energy(CitizenState.HOMELESS_REST_ENERGY_RECOVERY)
+				if c.is_recovered():
+					c.is_resting = false
+					c.current_block_reason = &""
+					c.path.clear()
+					c.move_state = CitizenState.MoveState.IDLE
 				continue
 
 			var home_footprint: Vector2i = home.get_footprint()
