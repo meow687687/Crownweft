@@ -5,6 +5,7 @@ const RoadAutotiler = preload("res://scripts/presentation/road_autotiler.gd")
 const GuidanceService = preload("res://scripts/simulation/guidance_service.gd")
 const EventLogService = preload("res://scripts/simulation/event_log_service.gd")
 const ScenarioCatalog = preload("res://scripts/domain/scenario_catalog.gd")
+const IncidentService = preload("res://scripts/simulation/incident_service.gd")
 
 @onready var camera: RTSCamera = $RTSCamera
 @onready var renderer: WorldRenderer = $WorldRenderer
@@ -26,6 +27,7 @@ var diplomacy_system: DiplomacySystem = DiplomacySystem.new()
 var regional_world: RegionalWorldState = null
 var guidance: GuidanceService = GuidanceService.new()
 var event_log: EventLogService = EventLogService.new()
+var incidents: IncidentService = IncidentService.new()
 var current_scenario_id: StringName = ScenarioCatalog.SCENARIO_FOUNDING
 var _last_chronicle_count: int = 0
 
@@ -76,6 +78,8 @@ func _init_simulation(scenario_id: StringName = ScenarioCatalog.SCENARIO_FOUNDIN
 	migration_status = "blocked"
 	migration_block_reason = "No vacant housing available in settlement."
 	total_migrants_arrived = 0
+	if incidents != null:
+		incidents.clear()
 
 	current_scenario_id = scenario_id
 	var scn_def: Dictionary = ScenarioCatalog.get_scenario_def(scenario_id)
@@ -216,6 +220,7 @@ func _init_simulation(scenario_id: StringName = ScenarioCatalog.SCENARIO_FOUNDIN
 			ui.update_event_log(event_log.events)
 		_update_workforce_panel()
 		ui.update_economy(economy.get_tax_level_name(), economy.approval)
+		ui.update_incident_button(incidents.get_all_active_incidents())
 
 func _setup_signals() -> void:
 	if ui == null:
@@ -273,6 +278,8 @@ func _setup_signals() -> void:
 	ui.load_game_requested.connect(_on_load_game)
 	ui.scenario_selected.connect(_on_scenario_selected)
 	ui.toggle_scenario_panel_requested.connect(_on_toggle_scenario_panel)
+	ui.toggle_incident_dialog_requested.connect(_on_toggle_incident_dialog)
+	ui.incident_decision_requested.connect(_on_incident_decision_requested)
 
 func _process(delta: float) -> void:
 	# Update Placement Preview Ghost
@@ -1100,6 +1107,10 @@ func _simulation_tick() -> void:
 	# Settlement migration processing
 	tick_migration(needs_report)
 
+	# Civic incidents evaluation and resolution
+	if incidents != null:
+		incidents.evaluate_incidents(self, needs_report, current_tick)
+
 	# 4. Create demands, assign jobs, and physically move haulers along A* paths.
 	var citizens_by_id: Dictionary = {}
 	for c: CitizenState in citizens:
@@ -1684,6 +1695,8 @@ func _update_ui_state(needs_report: Dictionary) -> void:
 		)
 		if economy != null:
 			ui.update_economy(economy.get_tax_level_name(), economy.approval)
+		if incidents != null:
+			ui.update_incident_button(incidents.get_all_active_incidents())
 	
 	if selected_building != null:
 		_update_building_inspector()
@@ -1967,6 +1980,28 @@ func _on_toggle_scenario_panel() -> void:
 	if ui != null:
 		ui.toggle_scenario_panel()
 
+func _on_toggle_incident_dialog() -> void:
+	if ui == null or incidents == null:
+		return
+	var active: Array = incidents.get_all_active_incidents()
+	if not active.is_empty():
+		ui.show_incident_dialog(active[0], self)
+	else:
+		ui.show_toast("No active civic incidents in the realm.", false)
+
+func _on_incident_decision_requested(incident_id: StringName, option_id: StringName) -> void:
+	apply_incident_decision(incident_id, option_id)
+
+func apply_incident_decision(incident_id: StringName, option_id: StringName) -> Dictionary:
+	if incidents == null:
+		return {"ok": false, "reason": "No IncidentService active"}
+	var res: Dictionary = incidents.apply_decision(incident_id, option_id, self, current_tick)
+	if res.get("ok", false):
+		if ui != null:
+			ui.close_incident_dialog_if_open(incident_id)
+			ui.update_incident_button(incidents.get_all_active_incidents())
+	return res
+
 func _on_scenario_selected(scenario_id: StringName) -> void:
 	_init_simulation(scenario_id)
 	if ui != null:
@@ -1997,7 +2032,8 @@ func save_game(file_path: String = SaveService.DEFAULT_SAVE_PATH) -> bool:
 		guidance,
 		event_log,
 		current_scenario_id,
-		mig_data
+		mig_data,
+		incidents
 	)
 	if ui != null:
 		if success:
@@ -2096,6 +2132,10 @@ func apply_loaded_state(loaded: Dictionary) -> void:
 		guidance.deserialize(loaded["guidance"])
 	if loaded.has("event_log") and loaded["event_log"] is Array:
 		event_log.deserialize(loaded["event_log"])
+	if loaded.has("incidents") and loaded["incidents"] is Dictionary and incidents != null:
+		incidents.deserialize(loaded["incidents"])
+	elif incidents != null:
+		incidents.clear()
 	if loaded.has("migration") and loaded["migration"] is Dictionary:
 		var mig: Dictionary = loaded["migration"]
 		migration_progress = float(mig.get("progress", 0.0))

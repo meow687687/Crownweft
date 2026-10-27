@@ -5,12 +5,14 @@ const LAW_TAXATION: StringName = &"taxation"
 const LAW_LABOUR: StringName = &"labour"
 const LAW_FORESTRY: StringName = &"forestry"
 const LAW_IMMIGRATION: StringName = &"immigration"
+const LAW_RATIONING: StringName = &"rationing"
 
 const LAW_IDS: Array[StringName] = [
 	LAW_TAXATION,
 	LAW_LABOUR,
 	LAW_FORESTRY,
-	LAW_IMMIGRATION
+	LAW_IMMIGRATION,
+	LAW_RATIONING
 ]
 
 static var _defs: Dictionary = {}
@@ -152,6 +154,39 @@ static func _init_defs() -> void:
 				"description": "Prohibits all external immigration by decree. Conserves existing food and housing strictly for current residents.",
 				"trade_offs": "Migration halted completely. Protects existing food stores from population strain.",
 				"approval_mod": -3.0
+			}
+		}
+	}
+
+	_defs[LAW_RATIONING] = {
+		"id": LAW_RATIONING,
+		"display_name": "Food Rationing Decree",
+		"description": "Regulates food distribution and meal allowances across all settlement households.",
+		"default_option_id": &"standard",
+		"options": {
+			&"standard": {
+				"id": &"standard",
+				"display_name": "Standard Rations",
+				"description": "Normal meal portions distributed to all citizens.",
+				"trade_offs": "Full food consumption, normal citizen energy recovery.",
+				"consumption_modifier": 1.0,
+				"approval_mod": 0.0
+			},
+			&"strict": {
+				"id": &"strict",
+				"display_name": "Strict Rationing",
+				"description": "Halves food portions to conserve critically low grain and bread reserves.",
+				"trade_offs": "Halves citizen food consumption, -5% approval penalty.",
+				"consumption_modifier": 0.5,
+				"approval_mod": -5.0
+			},
+			&"generous": {
+				"id": &"generous",
+				"display_name": "Generous Feasts",
+				"description": "Provides abundant meal allowances to boost civic happiness and morale.",
+				"trade_offs": "1.5x food consumption, +6% approval boost.",
+				"consumption_modifier": 1.5,
+				"approval_mod": 6.0
 			}
 		}
 	}

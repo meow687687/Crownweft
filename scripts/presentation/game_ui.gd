@@ -31,6 +31,8 @@ signal army_halt_requested(army_id: int)
 signal army_resupply_requested(army_id: int)
 signal guidance_minimized_toggled(minimized: bool)
 signal toggle_event_log_requested()
+signal toggle_incident_dialog_requested()
+signal incident_decision_requested(incident_id: StringName, option_id: StringName)
 
 # Top Bar Elements
 var label_coin: Label = null
@@ -126,6 +128,16 @@ var _last_world_map_data: Dictionary = {}
 # Scenario Selection Panel
 var btn_scenarios: Button = null
 var panel_scenario: PanelContainer = null
+
+# Civic Incidents Panel & Alert Button
+var btn_incidents: Button = null
+var panel_incident: PanelContainer = null
+var label_incident_title: Label = null
+var label_incident_urgency: Label = null
+var label_incident_cause: Label = null
+var label_incident_desc: Label = null
+var box_incident_options: VBoxContainer = null
+var current_viewed_incident: Dictionary = {}
 
 # Guidance & Objectives Panel
 var panel_guidance: PanelContainer = null
@@ -228,6 +240,7 @@ func _build_ui_layout() -> void:
 	btn_diplomacy = _create_ctrl_button(ctrl_box, "DIPLOMACY", func(): toggle_diplomacy_panel_requested.emit())
 	btn_world_map = _create_ctrl_button(ctrl_box, "WORLD MAP", func(): toggle_world_map_panel_requested.emit())
 	btn_scenarios = _create_ctrl_button(ctrl_box, "SCENARIOS", func(): toggle_scenario_panel_requested.emit())
+	btn_incidents = _create_ctrl_button(ctrl_box, "INCIDENTS (0)", func(): toggle_incident_dialog_requested.emit())
 	_create_ctrl_button(ctrl_box, "SAVE", func(): save_game_requested.emit())
 	_create_ctrl_button(ctrl_box, "LOAD", func(): load_game_requested.emit())
 
@@ -437,6 +450,7 @@ func _build_ui_layout() -> void:
 	_build_guidance_panel()
 	_build_event_log_panel()
 	_build_scenario_panel()
+	_build_incident_panel()
 
 func _build_guidance_panel() -> void:
 	panel_guidance = PanelContainer.new()
@@ -2900,6 +2914,206 @@ func toggle_scenario_panel() -> void:
 
 func is_scenario_panel_visible() -> bool:
 	return panel_scenario != null and panel_scenario.visible
+
+func _build_incident_panel() -> void:
+	panel_incident = PanelContainer.new()
+	panel_incident.set_anchors_preset(Control.PRESET_CENTER)
+	panel_incident.offset_left = -320
+	panel_incident.offset_top = -250
+	panel_incident.offset_right = 320
+	panel_incident.offset_bottom = 250
+	panel_incident.add_theme_stylebox_override("panel", UITheme.create_panel_style(UITheme.COLOR_BG_PANEL, UITheme.COLOR_BORDER_GOLD, 2, 6))
+	panel_incident.visible = false
+	panel_incident.mouse_filter = Control.MOUSE_FILTER_STOP
+	add_child(panel_incident)
+
+	var main_vbox := VBoxContainer.new()
+	main_vbox.add_theme_constant_override("separation", 8)
+	panel_incident.add_child(main_vbox)
+
+	var header := HBoxContainer.new()
+	header.add_theme_constant_override("separation", 8)
+	main_vbox.add_child(header)
+
+	label_incident_title = Label.new()
+	label_incident_title.text = "CIVIC INCIDENT"
+	label_incident_title.add_theme_font_size_override("font_size", 14)
+	label_incident_title.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+	label_incident_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(label_incident_title)
+
+	label_incident_urgency = Label.new()
+	label_incident_urgency.text = "[CRITICAL]"
+	label_incident_urgency.add_theme_font_size_override("font_size", 11)
+	label_incident_urgency.add_theme_color_override("font_color", UITheme.COLOR_RED_ALERT)
+	header.add_child(label_incident_urgency)
+
+	var btn_close := Button.new()
+	btn_close.text = "X"
+	btn_close.custom_minimum_size = Vector2(28, 24)
+	UITheme.apply_button_style(btn_close)
+	btn_close.pressed.connect(func(): panel_incident.visible = false)
+	header.add_child(btn_close)
+
+	main_vbox.add_child(HSeparator.new())
+
+	var cause_box := PanelContainer.new()
+	cause_box.add_theme_stylebox_override("panel", UITheme.create_panel_style(Color(0.18, 0.12, 0.10, 0.95), Color(0.85, 0.45, 0.25), 1, 4))
+	main_vbox.add_child(cause_box)
+
+	var cause_inner := MarginContainer.new()
+	cause_inner.add_theme_constant_override("margin_left", 8)
+	cause_inner.add_theme_constant_override("margin_right", 8)
+	cause_inner.add_theme_constant_override("margin_top", 6)
+	cause_inner.add_theme_constant_override("margin_bottom", 6)
+	cause_box.add_child(cause_inner)
+
+	label_incident_cause = Label.new()
+	label_incident_cause.text = "Cause: Unknown"
+	label_incident_cause.add_theme_font_size_override("font_size", 11)
+	label_incident_cause.add_theme_color_override("font_color", Color(0.95, 0.75, 0.55))
+	label_incident_cause.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	cause_inner.add_child(label_incident_cause)
+
+	label_incident_desc = Label.new()
+	label_incident_desc.text = "Description..."
+	label_incident_desc.add_theme_font_size_override("font_size", 11)
+	label_incident_desc.add_theme_color_override("font_color", Color(0.9, 0.9, 0.9))
+	label_incident_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	main_vbox.add_child(label_incident_desc)
+
+	main_vbox.add_child(HSeparator.new())
+
+	var label_prompt := Label.new()
+	label_prompt.text = "CHOOSE COURSE OF ACTION:"
+	label_prompt.add_theme_font_size_override("font_size", 10)
+	label_prompt.add_theme_color_override("font_color", UITheme.COLOR_TEXT_MUTED)
+	main_vbox.add_child(label_prompt)
+
+	box_incident_options = VBoxContainer.new()
+	box_incident_options.add_theme_constant_override("separation", 6)
+	box_incident_options.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	main_vbox.add_child(box_incident_options)
+
+func show_incident_dialog(incident_data: Dictionary, world = null) -> void:
+	current_viewed_incident = incident_data
+	if panel_incident == null:
+		return
+
+	var inc_id: StringName = incident_data.get("id", &"")
+	label_incident_title.text = "CIVIC INCIDENT: %s" % str(incident_data.get("title", str(inc_id))).to_upper()
+	
+	var urgency: StringName = incident_data.get("urgency", &"medium")
+	match urgency:
+		&"critical":
+			label_incident_urgency.text = "[CRITICAL]"
+			label_incident_urgency.add_theme_color_override("font_color", UITheme.COLOR_RED_ALERT)
+		&"high":
+			label_incident_urgency.text = "[HIGH PRIORITY]"
+			label_incident_urgency.add_theme_color_override("font_color", Color(0.95, 0.55, 0.25))
+		_:
+			label_incident_urgency.text = "[CIVIC NOTICE]"
+			label_incident_urgency.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+
+	label_incident_cause.text = "Cause: %s" % incident_data.get("cause", "Emerging settlement pressure.")
+	label_incident_desc.text = incident_data.get("description", "")
+
+	for child in box_incident_options.get_children():
+		child.queue_free()
+
+	var is_decided: bool = incident_data.get("chosen_option_id", &"") != &""
+	var chosen_opt_id: StringName = incident_data.get("chosen_option_id", &"")
+
+	var options: Array = incident_data.get("options", [])
+	for opt in options:
+		var opt_id: StringName = opt.get("id", &"")
+		var opt_btn := Button.new()
+		var opt_title: String = opt.get("title", str(opt_id))
+		var preview: String = opt.get("consequence_preview", "")
+		var cost_dict: Dictionary = opt.get("cost", {})
+		
+		var cost_str: String = ""
+		if not cost_dict.is_empty():
+			var parts: Array[String] = []
+			for r in cost_dict:
+				parts.append("%d %s" % [cost_dict[r], str(r).capitalize()])
+			cost_str = " [Cost: %s]" % ", ".join(parts)
+
+		opt_btn.text = "%s%s\n  %s" % [opt_title, cost_str, preview]
+		opt_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		opt_btn.custom_minimum_size = Vector2(0, 44)
+		UITheme.apply_button_style(opt_btn)
+
+		if is_decided:
+			if opt_id == chosen_opt_id:
+				opt_btn.text = "[ENACTED] " + opt_btn.text
+				opt_btn.add_theme_color_override("font_color", Color(0.4, 0.9, 0.4))
+			else:
+				opt_btn.disabled = true
+		else:
+			var can_afford: bool = true
+			var block_reason: String = ""
+			if world != null and world.incidents != null:
+				var check = world.incidents.check_option_prerequisites(inc_id, opt_id, world)
+				if not check.get("ok", false):
+					can_afford = false
+					block_reason = check.get("reason", "Requirements unmet")
+			
+			if not can_afford:
+				opt_btn.disabled = true
+				opt_btn.text += "\n  (BLOCKED: %s)" % block_reason
+			else:
+				var target_inc_id = inc_id
+				var target_opt_id = opt_id
+				opt_btn.pressed.connect(func():
+					incident_decision_requested.emit(target_inc_id, target_opt_id)
+				)
+
+		box_incident_options.add_child(opt_btn)
+
+	panel_incident.visible = true
+	if panel_workforce != null: panel_workforce.visible = false
+	if panel_government != null: panel_government.visible = false
+	if panel_diplomacy != null: panel_diplomacy.visible = false
+	if panel_world_map != null: panel_world_map.visible = false
+	if panel_scenario != null: panel_scenario.visible = false
+
+func update_incident_button(active_incidents: Array) -> void:
+	if btn_incidents == null:
+		return
+	var count: int = active_incidents.size()
+	btn_incidents.text = "INCIDENTS (%d)" % count
+	if count > 0:
+		var has_critical: bool = false
+		for inc in active_incidents:
+			if inc.get("urgency", &"") == &"critical":
+				has_critical = true
+				break
+		if has_critical:
+			btn_incidents.add_theme_color_override("font_color", UITheme.COLOR_RED_ALERT)
+		else:
+			btn_incidents.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+	else:
+		btn_incidents.remove_theme_color_override("font_color")
+
+func close_incident_dialog_if_open(incident_id: StringName = &"") -> void:
+	if panel_incident != null and panel_incident.visible:
+		if incident_id == &"" or current_viewed_incident.get("id", &"") == incident_id:
+			panel_incident.visible = false
+
+func toggle_incident_dialog() -> void:
+	if panel_incident != null:
+		panel_incident.visible = not panel_incident.visible
+		if panel_incident.visible:
+			if panel_workforce != null: panel_workforce.visible = false
+			if panel_government != null: panel_government.visible = false
+			if panel_diplomacy != null: panel_diplomacy.visible = false
+			if panel_world_map != null: panel_world_map.visible = false
+			if panel_scenario != null: panel_scenario.visible = false
+
+func is_incident_dialog_visible() -> bool:
+	return panel_incident != null and panel_incident.visible
+
 
 
 

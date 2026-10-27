@@ -20,7 +20,8 @@ static func serialize(
 	guidance = null,
 	event_log = null,
 	scenario_id: StringName = &"crownweft_founding",
-	migration_data: Dictionary = {}
+	migration_data: Dictionary = {},
+	incidents = null
 ) -> Dictionary:
 	var gov_dict: Dictionary = {
 		"enacted_policies": {},
@@ -52,6 +53,7 @@ static func serialize(
 			"block_reason": str(migration_data.get("block_reason", "")),
 			"total_migrants": int(migration_data.get("total_migrants", 0))
 		},
+		"incidents": incidents.serialize() if incidents != null else {},
 		"government": gov_dict,
 		"diplomacy": diplomacy.serialize() if diplomacy != null else DiplomacyState.new().serialize(),
 		"regional_world": regional_world.serialize() if regional_world != null else RegionalWorldState.new().serialize(),
@@ -468,5 +470,8 @@ static func deserialize(data: Dictionary) -> Dictionary:
 		reg_state.regions = RegionCatalog.create_default_regions()
 		reg_state.routes = RegionCatalog.create_default_routes()
 	result["regional_world"] = reg_state
+
+	# Deserialize civic incidents
+	result["incidents"] = data.get("incidents", {})
 		
 	return result

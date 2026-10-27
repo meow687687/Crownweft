@@ -252,6 +252,13 @@ func get_armies_for_region(region_id: StringName) -> Array[ArmyState]:
 			res.append(a)
 	return res
 
+func get_armies_for_faction(faction_id: StringName) -> Array[ArmyState]:
+	var res: Array[ArmyState] = []
+	for a in armies.values():
+		if a.is_active() and a.faction_id == faction_id:
+			res.append(a)
+	return res
+
 func create_army(
 	faction_id: StringName,
 	army_name: String,

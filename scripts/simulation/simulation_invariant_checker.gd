@@ -1,6 +1,8 @@
 class_name SimulationInvariantChecker
 extends RefCounted
 
+const IncidentCatalog = preload("res://scripts/domain/incident_catalog.gd")
+
 # Result of an invariant check run
 class CheckResult:
 	var passed: bool = true
@@ -29,7 +31,8 @@ static func audit(
 	economy: EconomyState = null,
 	government: GovernmentState = null,
 	diplomacy: DiplomacyState = null,
-	regional_world: RegionalWorldState = null
+	regional_world: RegionalWorldState = null,
+	incidents = null
 ) -> CheckResult:
 	var result := CheckResult.new()
 	
@@ -39,6 +42,7 @@ static func audit(
 	_check_buildings_and_spatial(result, buildings, world_state, pathfinding)
 	_check_diplomacy_and_wars(result, diplomacy, regional_world)
 	_check_regional_trade(result, regional_world, diplomacy)
+	_check_civic_incidents(result, incidents)
 	
 	return result
 
@@ -332,3 +336,24 @@ static func _check_regional_trade(
 			var amount: int = sh.cargo[res_id]
 			if amount < 0:
 				result.add_violation("TradeShipment", sh.id, "NEGATIVE_CARGO", "Shipment cargo %s is negative: %d" % [str(res_id), amount])
+
+# 7. Civic Incidents Invariants
+static func _check_civic_incidents(result: CheckResult, incidents) -> void:
+	if incidents == null:
+		return
+	for inc_id in incidents.active_incidents:
+		if not (inc_id in IncidentCatalog.INCIDENT_IDS):
+			result.add_violation("Incident", inc_id, "UNKNOWN_INCIDENT_ID", "Active incident ID not in IncidentCatalog: %s" % str(inc_id))
+		var inc_data = incidents.active_incidents[inc_id]
+		if not (inc_data is Dictionary):
+			result.add_violation("Incident", inc_id, "INVALID_DATA_TYPE", "Incident data is not a Dictionary")
+			continue
+		if not inc_data.has("title") or not inc_data.has("status") or not inc_data.has("cause"):
+			result.add_violation("Incident", inc_id, "MISSING_FIELDS", "Incident missing required title/status/cause fields")
+	for cd_id in incidents.cooldowns:
+		if not (cd_id in IncidentCatalog.INCIDENT_IDS):
+			result.add_violation("IncidentCooldown", cd_id, "UNKNOWN_COOLDOWN_ID", "Cooldown ID not in IncidentCatalog: %s" % str(cd_id))
+		var cd_tick: int = int(incidents.cooldowns[cd_id])
+		if cd_tick < 0:
+			result.add_violation("IncidentCooldown", cd_id, "NEGATIVE_COOLDOWN_TICK", "Cooldown tick cannot be negative: %d" % cd_tick)
+
