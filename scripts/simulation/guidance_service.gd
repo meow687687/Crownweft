@@ -39,24 +39,31 @@ func update_guidance(world, event_log = null) -> Dictionary:
 	if world == null:
 		return {}
 
-	var cur_id: StringName = get_current_objective_id(world)
-	var info: Dictionary = _evaluate_objective(cur_id, world)
+	var iterations: int = 0
+	var max_iterations: int = ALL_OBJECTIVE_IDS.size()
+	while iterations < max_iterations:
+		iterations += 1
+		var cur_id: StringName = get_current_objective_id(world)
+		var info: Dictionary = _evaluate_objective(cur_id, world)
 
-	# Check if newly completed
-	if cur_id != &"all_completed" and info.get("is_satisfied", false):
-		completed_objectives.append(cur_id)
-		var obj_title: String = info.get("title", str(cur_id))
-		objective_completed.emit(cur_id, obj_title)
-		if event_log != null:
-			event_log.add_event(&"objective", "Objective Complete: %s" % obj_title, &"success", world.current_tick)
-		
-		# Re-evaluate with the next objective
-		cur_id = get_current_objective_id(world)
-		info = _evaluate_objective(cur_id, world)
+		# Check if newly completed
+		if cur_id != &"all_completed" and info.get("is_satisfied", false):
+			completed_objectives.append(cur_id)
+			var obj_title: String = info.get("title", str(cur_id))
+			objective_completed.emit(cur_id, obj_title)
+			if event_log != null:
+				event_log.add_event(&"objective", "Objective Complete: %s" % obj_title, &"success", world.current_tick)
+			# Continue loop to immediately cascade into newly satisfied subsequent objectives
+		else:
+			_cached_info = info
+			objective_updated.emit(info)
+			return info
 
-	_cached_info = info
-	objective_updated.emit(info)
-	return info
+	var final_id: StringName = get_current_objective_id(world)
+	var final_info: Dictionary = _evaluate_objective(final_id, world)
+	_cached_info = final_info
+	objective_updated.emit(final_info)
+	return final_info
 
 func _evaluate_objective(obj_id: StringName, world) -> Dictionary:
 	match obj_id:
@@ -91,7 +98,7 @@ func _evaluate_objective(obj_id: StringName, world) -> Dictionary:
 			return {}
 
 func _eval_staff_farm(world) -> Dictionary:
-	var farm = _find_first_building(world, &"farm")
+	var farm = _find_best_building(world, &"farm")
 	var is_staffed: bool = false
 	var is_blocked: bool = false
 	var blocker: String = ""
@@ -105,7 +112,7 @@ func _eval_staff_farm(world) -> Dictionary:
 			var unassigned: int = _count_unassigned_citizens(world)
 			if unassigned <= 0:
 				is_blocked = true
-				blocker = "All citizens are currently assigned to other roles."
+				blocker = "All citizens are currently assigned to other roles. Open Workforce (W) to reassign a citizen."
 
 	return {
 		"id": OBJ_STAFF_FARM,
@@ -121,19 +128,33 @@ func _eval_staff_farm(world) -> Dictionary:
 	}
 
 func _eval_produce_grain(world) -> Dictionary:
-	var total_grain: int = _count_settlement_resource(world, &"grain")
 	var target_grain: int = 6
-	var is_satisfied: bool = total_grain >= target_grain
+	var total_lifetime_grain: int = 0
+	for b in world.buildings:
+		if b.definition_id == &"farm" and not b.is_destroyed:
+			total_lifetime_grain += b.lifetime_produced.get(&"grain", 0)
+	var total_grain: int = _count_settlement_resource(world, &"grain")
+	var is_satisfied: bool = (total_lifetime_grain >= target_grain) or (total_grain >= target_grain)
 	var is_blocked: bool = false
 	var blocker: String = ""
 
-	var farm = _find_first_building(world, &"farm")
-	if farm == null or farm.assigned_workers == 0:
-		is_blocked = true
-		blocker = "The farm has no workers assigned."
-	elif farm.current_block_reason != &"":
-		is_blocked = true
-		blocker = "Farm is blocked: %s" % str(farm.current_block_reason)
+	var farm = _find_best_building(world, &"farm")
+	if not is_satisfied:
+		if farm == null or farm.assigned_workers == 0:
+			is_blocked = true
+			blocker = "The farm has no workers assigned. Assign a farmer in Workforce (W)."
+		elif farm.current_block_reason != &"":
+			if farm.current_block_reason == &"NO_WORKERS":
+				var diag: Dictionary = _diagnose_building_workers(world, farm, "Farmer")
+				if diag.get("has_assigned", false):
+					is_blocked = false
+					blocker = diag.get("status_note", "Worker resting or commuting")
+				else:
+					is_blocked = true
+					blocker = "Farm is unstaffed. Assign a farmer in Workforce (W)."
+			else:
+				is_blocked = true
+				blocker = "Farm is blocked: %s" % str(farm.current_block_reason)
 
 	return {
 		"id": OBJ_PRODUCE_GRAIN,
@@ -141,7 +162,7 @@ func _eval_produce_grain(world) -> Dictionary:
 		"title": "Harvest the First Grain Crop",
 		"explanation": "With the farmer tending the crop, raw grain will accumulate in the farm inventory.",
 		"action": "Run the simulation (1x/2x/3x speed) until the farm produces at least 6 grain.",
-		"progress_text": "Grain: %d / %d" % [total_grain, target_grain],
+		"progress_text": "Grain: %d / %d" % [maxi(total_lifetime_grain, total_grain), target_grain],
 		"is_satisfied": is_satisfied,
 		"is_blocked": is_blocked,
 		"blocker_reason": blocker,
@@ -149,7 +170,7 @@ func _eval_produce_grain(world) -> Dictionary:
 	}
 
 func _eval_place_bakery(world) -> Dictionary:
-	var bakery = _find_first_building(world, &"bakery")
+	var bakery = _find_best_building(world, &"bakery")
 	var is_placed: bool = bakery != null
 	var is_blocked: bool = false
 	var blocker: String = ""
@@ -159,7 +180,7 @@ func _eval_place_bakery(world) -> Dictionary:
 	if not is_placed:
 		if timber < 4 or stone < 4:
 			is_blocked = true
-			blocker = "Shortage of building supplies (Need: 4 Timber, 4 Stone. Have: %d Timber, %d Stone)." % [timber, stone]
+			blocker = "Shortage of building supplies (Need: 4 Timber, 4 Stone. Have: %d Timber, %d Stone). Construct a Woodcutter Camp to replenish." % [timber, stone]
 
 	return {
 		"id": OBJ_PLACE_BAKERY,
@@ -175,7 +196,7 @@ func _eval_place_bakery(world) -> Dictionary:
 	}
 
 func _eval_construct_bakery(world) -> Dictionary:
-	var bakery = _find_first_building(world, &"bakery")
+	var bakery = _find_best_building(world, &"bakery")
 	var is_active: bool = false
 	var is_blocked: bool = false
 	var blocker: String = ""
@@ -195,7 +216,14 @@ func _eval_construct_bakery(world) -> Dictionary:
 				var needed_timber = maxi(0, 4 - bakery.construction_inventory.get_quantity(&"timber"))
 				var needed_stone = maxi(0, 4 - bakery.construction_inventory.get_quantity(&"stone"))
 				if needed_timber > 0 or needed_stone > 0:
-					blocker = "Awaiting materials: %d Timber, %d Stone in transit." % [needed_timber, needed_stone]
+					var total_timber = _count_settlement_resource(world, &"timber")
+					var total_stone = _count_settlement_resource(world, &"stone")
+					if total_timber < needed_timber or total_stone < needed_stone:
+						is_blocked = true
+						blocker = "Material shortage: Need %d Timber, %d Stone. Construct Woodcutter Camp or quarry." % [needed_timber, needed_stone]
+					else:
+						is_blocked = false
+						blocker = "Awaiting materials: %d Timber, %d Stone in transit by haulers." % [needed_timber, needed_stone]
 
 	return {
 		"id": OBJ_CONSTRUCT_BAKERY,
@@ -211,12 +239,21 @@ func _eval_construct_bakery(world) -> Dictionary:
 	}
 
 func _eval_produce_bread(world) -> Dictionary:
-	var bakery = _find_first_building(world, &"bakery")
+	var bakery = _find_best_building(world, &"bakery")
 	var is_staffed: bool = false
 	var total_bread: int = _count_settlement_resource(world, &"bread")
 	var is_satisfied: bool = false
 	var is_blocked: bool = false
 	var blocker: String = ""
+
+	var total_lifetime_bread: int = 0
+	for b in world.buildings:
+		if b.definition_id == &"bakery" and not b.is_destroyed:
+			total_lifetime_bread += b.lifetime_produced.get(&"bread", 0)
+	var bakery_stock: int = 0
+	for b in world.buildings:
+		if b.definition_id == &"bakery" and not b.is_destroyed:
+			bakery_stock += b.inventory.get_quantity(&"bread")
 
 	if bakery == null or bakery.status != BuildingState.Status.ACTIVE:
 		is_blocked = true
@@ -224,19 +261,29 @@ func _eval_produce_bread(world) -> Dictionary:
 	else:
 		is_staffed = bakery.assigned_workers >= 1
 		var grain_avail: int = _count_settlement_resource(world, &"grain")
-		if not is_staffed:
-			is_blocked = true
-			blocker = "No baker assigned to Bakery. Open Workforce (W) to assign worker."
-		elif grain_avail < 2 and bakery.inventory.get_quantity(&"grain") < 2:
-			is_blocked = true
-			blocker = "No grain available for baking. Ensure Farm is producing grain."
-		elif bakery.current_block_reason != &"":
-			is_blocked = true
-			blocker = "Bakery blocked: %s" % str(bakery.current_block_reason)
 
-		# Satisfied when bakery is staffed and bread is baked into bakery inventory (or total bread reaches 30)
-		if is_staffed and (bakery.inventory.get_quantity(&"bread") >= 1 or total_bread >= 30):
+		if is_staffed and (total_lifetime_bread >= 1 or bakery_stock >= 1 or total_bread >= 30):
 			is_satisfied = true
+
+		if not is_satisfied:
+			if not is_staffed:
+				is_blocked = true
+				blocker = "No baker assigned to Bakery. Open Workforce (W) to assign worker."
+			elif grain_avail < 2 and bakery.inventory.get_quantity(&"grain") < 2:
+				is_blocked = true
+				blocker = "No grain available for baking. Ensure Farm is producing grain."
+			elif bakery.current_block_reason != &"":
+				if bakery.current_block_reason == &"NO_WORKERS":
+					var diag: Dictionary = _diagnose_building_workers(world, bakery, "Baker")
+					if diag.get("has_assigned", false):
+						is_blocked = false
+						blocker = diag.get("status_note", "Baker resting or commuting")
+					else:
+						is_blocked = true
+						blocker = "No baker present at Bakery."
+				else:
+					is_blocked = true
+					blocker = "Bakery blocked: %s" % str(bakery.current_block_reason)
 
 	return {
 		"id": OBJ_PRODUCE_BREAD,
@@ -244,7 +291,7 @@ func _eval_produce_bread(world) -> Dictionary:
 		"title": "Staff Bakery & Bake Bread",
 		"explanation": "The oven is built and ready. Assign a Baker to begin transforming harvested grain into fresh bread.",
 		"action": "Assign 1 Baker to the active Bakery and allow them to bake bread.",
-		"progress_text": "Workers: %d / 1  |  Bread: %d" % [bakery.assigned_workers if bakery != null else 0, total_bread],
+		"progress_text": "Workers: %d / 1  |  Bread: %d" % [bakery.assigned_workers if bakery != null else 0, maxi(total_bread, total_lifetime_bread)],
 		"is_satisfied": is_satisfied,
 		"is_blocked": is_blocked,
 		"blocker_reason": blocker,
@@ -272,14 +319,27 @@ func _eval_propose_trade(world) -> Dictionary:
 			if route != null and not route.is_open:
 				is_blocked = true
 				blocker = "Route to Valen Lowlands is currently closed or blocked."
+			else:
+				var main_inv: Inventory = world.buildings[0].inventory if not world.buildings.is_empty() else null
+				var town_hall_grain: int = main_inv.get_quantity(&"grain") if main_inv != null else 0
+				var total_grain: int = _count_settlement_resource(world, &"grain")
+				if town_hall_grain < 10:
+					if total_grain >= 10:
+						blocker = "Grain in transit: %d / 10 Grain in Town Hall (Haulers moving grain from farm)." % town_hall_grain
+					else:
+						blocker = "Awaiting trade stock: %d / 10 Grain in Town Hall." % town_hall_grain
+
+	var main_inv: Inventory = world.buildings[0].inventory if not world.buildings.is_empty() else null
+	var th_grain: int = main_inv.get_quantity(&"grain") if main_inv != null else 0
+	var progress_str: String = "Trade Agreement: ACCEPTED" if has_contract else ("Storage: %d / 10 Grain in Town Hall" % th_grain)
 
 	return {
 		"id": OBJ_PROPOSE_TRADE,
 		"stage": "Stage C: Realm-Level Decision",
 		"title": "Establish Regional Trade with Valen",
 		"explanation": "Our local food chain is functioning. The realm beyond Crownweft offers trade with the Valen Trade Compact.",
-		"action": "Press 'M' (World Map) or 'D' (Diplomacy) to accept or form a trade contract with Valen.",
-		"progress_text": "Trade Agreement: %s" % ("ACCEPTED" if has_contract else "PENDING"),
+		"action": "Ensure 10 Grain is stocked in Town Hall, then press 'D' (Diplomacy) to accept Valen's trade offer.",
+		"progress_text": progress_str,
 		"is_satisfied": has_contract,
 		"is_blocked": is_blocked,
 		"blocker_reason": blocker,
@@ -320,11 +380,65 @@ func _eval_settle_trade(world) -> Dictionary:
 	}
 
 # Helper queries
-func _find_first_building(world, def_id: StringName):
+func _find_best_building(world, def_id: StringName):
+	if world == null or not ("buildings" in world):
+		return null
+	var candidates: Array = []
 	for b in world.buildings:
 		if b.definition_id == def_id and not b.is_destroyed:
-			return b
-	return null
+			candidates.append(b)
+	if candidates.is_empty():
+		return null
+	var best = candidates[0]
+	var best_score: int = -1
+	for b in candidates:
+		var score: int = 0
+		if b.status == BuildingState.Status.ACTIVE:
+			score += 10
+		if b.assigned_workers > 0:
+			score += 5
+		if b.lifetime_produced.size() > 0:
+			score += 2
+		if score > best_score:
+			best_score = score
+			best = b
+	return best
+
+func _find_first_building(world, def_id: StringName):
+	return _find_best_building(world, def_id)
+
+func _diagnose_building_workers(world, building: BuildingState, worker_role_label: String = "Worker") -> Dictionary:
+	if world == null or building == null or not ("citizens" in world):
+		return {"has_assigned": false, "status_note": ""}
+	var assigned: Array = []
+	for c in world.citizens:
+		if c.workplace_id == building.entity_id and c.role_id != &"hauler":
+			assigned.append(c)
+	if assigned.is_empty():
+		return {"has_assigned": false, "status_note": ""}
+
+	var all_resting: bool = true
+	var all_moving: bool = true
+	for c in assigned:
+		if not c.is_resting:
+			all_resting = false
+		if c.move_state != CitizenState.MoveState.MOVING:
+			all_moving = false
+
+	var note: String = ""
+	if all_resting:
+		note = "%s is resting; production will resume upon wake." % worker_role_label
+	elif all_moving:
+		note = "%s is commuting to workplace." % worker_role_label
+	else:
+		note = "%s is active or transitioning." % worker_role_label
+
+	return {
+		"has_assigned": true,
+		"all_resting": all_resting,
+		"all_moving": all_moving,
+		"status_note": note
+	}
 
 func _count_unassigned_citizens(world) -> int:
 	var count: int = 0

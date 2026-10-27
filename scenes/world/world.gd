@@ -127,7 +127,7 @@ func _init_simulation() -> void:
 		{"species": &"greenwarden", "status": &"artisan", "culture": &"sylvanari", "religion": &"old_grove"},
 		{"species": &"stoneborn", "status": &"artisan", "culture": &"khorvath", "religion": &"secular"},
 		{"species": &"human", "status": &"administrator", "culture": &"valen", "religion": &"pantheon"},
-		{"species": &"frostkin", "status": &"scholar", "culture": &"khorvath", "religion": &"secular"},
+		{"species": &"stoneborn", "status": &"scholar", "culture": &"khorvath", "religion": &"secular"},
 		{"species": &"human", "status": &"merchant", "culture": &"valen", "religion": &"pantheon"},
 		{"species": &"greenwarden", "status": &"commoner", "culture": &"sylvanari", "religion": &"old_grove"},
 		{"species": &"stoneborn", "status": &"commoner", "culture": &"khorvath", "religion": &"secular"},

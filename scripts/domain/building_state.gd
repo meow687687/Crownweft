@@ -28,6 +28,7 @@ var assigned_workers: int = 0
 var enabled: bool = true
 var production_progress: int = 0
 var production_work_accum: float = 0.0
+var lifetime_produced: Dictionary = {} # StringName -> int
 var current_block_reason: StringName = &""
 @export var work_priority: int = PRIORITY_DEFAULT
 var tile_origin: Vector2i = Vector2i.ZERO

@@ -92,6 +92,7 @@ static func serialize(
 			"work_priority": b.work_priority,
 			"production_progress": b.production_progress,
 			"production_work_accum": b.production_work_accum,
+			"lifetime_produced": b.lifetime_produced.duplicate(),
 			"block_reason": str(b.current_block_reason),
 			"health": b.health,
 			"max_health": b.max_health,
@@ -267,6 +268,9 @@ static func deserialize(data: Dictionary) -> Dictionary:
 		b.work_priority = int(b_dict.get("work_priority", BuildingState.PRIORITY_DEFAULT))
 		b.production_progress = int(b_dict.get("production_progress", 0))
 		b.production_work_accum = float(b_dict.get("production_work_accum", 0.0))
+		var saved_lp: Dictionary = b_dict.get("lifetime_produced", {})
+		for lp_k in saved_lp:
+			b.lifetime_produced[StringName(lp_k)] = int(saved_lp[lp_k])
 		b.current_block_reason = StringName(b_dict.get("block_reason", ""))
 		b.health = int(b_dict.get("health", 100))
 		b.max_health = int(b_dict.get("max_health", 100))

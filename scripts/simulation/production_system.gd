@@ -146,6 +146,7 @@ func tick_building(
 		if not building.inventory.add_resource(out_res, final_amount, "PRODUCTION_OUTPUT", true):
 			building.current_block_reason = &"OUTPUT_FULL"
 			return
+		building.lifetime_produced[out_res] = int(building.lifetime_produced.get(out_res, 0)) + final_amount
 	building.production_progress = 0
 	building.production_work_accum = 0.0
 
