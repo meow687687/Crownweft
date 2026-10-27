@@ -115,6 +115,7 @@ static func _check_citizens_and_workforce(
 			hauler_citizens[h.id] = h
 
 	var workers_per_building: Dictionary = {}
+	var occupants_per_home: Dictionary = {}
 
 	for c in citizens:
 		if c == null:
@@ -141,6 +142,10 @@ static func _check_citizens_and_workforce(
 			var home: BuildingState = building_map.get(c.home_building_id, null)
 			if home == null or home.is_destroyed:
 				result.add_violation("Citizen", c.id, "INVALID_HOME", "Home building id %d missing or destroyed" % c.home_building_id)
+			elif home.status != BuildingState.Status.ACTIVE:
+				result.add_violation("Citizen", c.id, "INACTIVE_HOME", "Home building id %d is under construction or planned" % c.home_building_id)
+			else:
+				occupants_per_home[c.home_building_id] = occupants_per_home.get(c.home_building_id, 0) + 1
 
 		# Rest and hauling consistency
 		if c.is_resting:
@@ -148,13 +153,18 @@ static func _check_citizens_and_workforce(
 			if h != null and h.carried_amount > 0:
 				result.add_violation("Citizen", c.id, "RESTING_WHILE_CARRYING", "Citizen is resting while holding carried cargo %s (%d)" % [str(h.carried_resource), h.carried_amount])
 
-	# Check building assigned_workers agreement
+	# Check building assigned_workers agreement and housing capacity
 	for b in buildings:
 		if b == null or b.is_destroyed:
 			continue
 		var counted_workers: int = workers_per_building.get(b.entity_id, 0)
 		if b.assigned_workers != counted_workers:
 			result.add_violation("Building", b.entity_id, "WORKER_COUNT_MISMATCH", "Building records %d assigned workers, but %d citizens reference it" % [b.assigned_workers, counted_workers])
+		
+		var housing_cap: int = b.get_housing_capacity()
+		var occupants: int = occupants_per_home.get(b.entity_id, 0)
+		if occupants > housing_cap:
+			result.add_violation("Building", b.entity_id, "OVERCROWDED_HOUSING", "Building housing capacity %d exceeded by %d occupants" % [housing_cap, occupants])
 
 # 3. Inventories and Transactions
 static func _check_inventories_and_transactions(

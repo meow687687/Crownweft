@@ -180,6 +180,14 @@ func get_unreserved_materials_needed() -> Dictionary:
 			needed[res_id] = rem
 	return needed
 
+func get_housing_capacity() -> int:
+	if status != Status.ACTIVE or is_destroyed:
+		return 0
+	return BuildingCatalog.get_housing_capacity(definition_id)
+
+func is_residential() -> bool:
+	return BuildingCatalog.is_residential(definition_id)
+
 func get_construction_state() -> Dictionary:
 	var status_name: String = "ACTIVE"
 	match status:

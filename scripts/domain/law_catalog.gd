@@ -4,11 +4,13 @@ extends RefCounted
 const LAW_TAXATION: StringName = &"taxation"
 const LAW_LABOUR: StringName = &"labour"
 const LAW_FORESTRY: StringName = &"forestry"
+const LAW_IMMIGRATION: StringName = &"immigration"
 
 const LAW_IDS: Array[StringName] = [
 	LAW_TAXATION,
 	LAW_LABOUR,
-	LAW_FORESTRY
+	LAW_FORESTRY,
+	LAW_IMMIGRATION
 ]
 
 static var _defs: Dictionary = {}
@@ -120,6 +122,36 @@ static func _init_defs() -> void:
 				"harvest_allowed": false,
 				"bonus_timber": 0,
 				"approval_mod": 6.0
+			}
+		}
+	}
+
+	_defs[LAW_IMMIGRATION] = {
+		"id": LAW_IMMIGRATION,
+		"display_name": "Immigration Decree",
+		"description": "Governs the admission of newcomers, wanderers, and frontier settlers into the realm.",
+		"default_option_id": &"open",
+		"options": {
+			&"open": {
+				"id": &"open",
+				"display_name": "Open Borders",
+				"description": "Welcomes wanderers, displaced farmers, and artisans to settle whenever vacant housing and food reserves allow.",
+				"trade_offs": "Migration active when housing, food buffer, and approval (>=50%) permit.",
+				"approval_mod": 0.0
+			},
+			&"selective": {
+				"id": &"selective",
+				"display_name": "Selective Admission",
+				"description": "Enforces strict civic vetting. Immigrants are admitted only when settlement approval is high and food reserves are ample.",
+				"trade_offs": "Requires >=70% approval and +50% food reserves. Prevents rapid strain on local grain stores.",
+				"approval_mod": 2.0
+			},
+			&"closed": {
+				"id": &"closed",
+				"display_name": "Closed Frontier",
+				"description": "Prohibits all external immigration by decree. Conserves existing food and housing strictly for current residents.",
+				"trade_offs": "Migration halted completely. Protects existing food stores from population strain.",
+				"approval_mod": -3.0
 			}
 		}
 	}

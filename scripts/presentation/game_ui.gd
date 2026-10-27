@@ -39,6 +39,7 @@ var label_grain: Label = null
 var label_timber: Label = null
 var label_stone: Label = null
 var label_population: Label = null
+var label_housing: Label = null
 var label_approval: Label = null
 
 var btn_tax: Button = null
@@ -197,6 +198,7 @@ func _build_ui_layout() -> void:
 	status_row.add_theme_constant_override("separation", 16)
 	top_box.add_child(status_row)
 	label_population = _create_badge(status_row, "POPULATION", "10 FED", Color("#9ed7e7"))
+	label_housing = _create_badge(status_row, "HOUSING", "0/0", UITheme.COLOR_RED_ALERT)
 	label_approval = _create_badge(status_row, "APPROVAL", "60%", UITheme.COLOR_GREEN_OK)
 	btn_tax = Button.new()
 	btn_tax.text = "TAX: NORMAL"
@@ -724,6 +726,26 @@ func update_population(total: int, fed: int, hungry: int, at_risk: int) -> void:
 			label_population.text = "POPULATION  %d  |  %d HUNGRY  |  %d AT RISK" % [total, hungry, at_risk]
 			label_population.add_theme_color_override("font_color", UITheme.COLOR_RED_ALERT)
 
+func update_housing(housed: int, total_capacity: int, homeless: int, migration_status: String, block_reason: String = "") -> void:
+	if label_housing != null:
+		if total_capacity <= 0:
+			label_housing.text = "HOUSING  0/0  (%d HOMELESS)" % homeless
+			label_housing.add_theme_color_override("font_color", UITheme.COLOR_RED_ALERT)
+		elif homeless > 0:
+			label_housing.text = "HOUSING  %d/%d  (%d HOMELESS)" % [housed, total_capacity, homeless]
+			label_housing.add_theme_color_override("font_color", Color.ORANGE)
+		else:
+			var vacancy: int = total_capacity - housed
+			if migration_status == "attracting":
+				label_housing.text = "HOUSING  %d/%d  (+%d VACANT | ATTRACTING)" % [housed, total_capacity, vacancy]
+				label_housing.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
+			elif migration_status == "arrived":
+				label_housing.text = "HOUSING  %d/%d  (+%d VACANT | ARRIVED)" % [housed, total_capacity, vacancy]
+				label_housing.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
+			else:
+				label_housing.text = "HOUSING  %d/%d  (+%d VACANT)" % [housed, total_capacity, vacancy]
+				label_housing.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
+
 func update_economy(tax_name: String, approval_val: float) -> void:
 	if label_approval != null:
 		var app_int: int = int(roundf(approval_val))
@@ -888,7 +910,16 @@ func show_building_details(building: BuildingState, def_info: Dictionary, worker
 	]
 	
 	# Status & Block Reasons
-	if building.current_block_reason == &"":
+	if building.is_residential() and building.current_block_reason == &"":
+		var h_cap: int = building.get_housing_capacity()
+		var occ_list: Array = details.get("occupants", [])
+		if occ_list.size() >= h_cap and h_cap > 0:
+			label_inspector_status.text = "STATUS: ACTIVE (FULL — %d/%d)" % [occ_list.size(), h_cap]
+			label_inspector_status.add_theme_color_override("font_color", Color.ORANGE)
+		else:
+			label_inspector_status.text = "STATUS: ACTIVE (%d/%d OCCUPIED)" % [occ_list.size(), h_cap]
+			label_inspector_status.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
+	elif building.current_block_reason == &"":
 		label_inspector_status.text = "STATUS: ACTIVE"
 		label_inspector_status.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
 	elif building.current_block_reason == &"ENTRANCE_UNREACHABLE":
@@ -931,7 +962,10 @@ func show_building_details(building: BuildingState, def_info: Dictionary, worker
 		
 	# Workers
 	var max_slots: int = BuildingCatalog.get_worker_slots_for_footprint(building.definition_id, building.get_footprint())
-	if workers_present >= 0:
+	if building.is_residential():
+		var occ_list: Array = details.get("occupants", [])
+		label_inspector_workers.text = "Housing: %d / %d residents" % [occ_list.size(), building.get_housing_capacity()]
+	elif workers_present >= 0:
 		label_inspector_workers.text = "Workers: %d assigned / %d at work / %d slots" % [building.assigned_workers, workers_present, max_slots]
 	else:
 		label_inspector_workers.text = "Workers: %d assigned / %d slots" % [building.assigned_workers, max_slots]
@@ -948,6 +982,22 @@ func show_building_details(building: BuildingState, def_info: Dictionary, worker
 		for res_id in building.inventory.quantities:
 			var qty: int = building.inventory.quantities[res_id]
 			inv_text += "  %s: %d\n" % [str(res_id).capitalize(), qty]
+
+	if building.is_residential():
+		var h_cap: int = building.get_housing_capacity()
+		var occ_list: Array = details.get("occupants", [])
+		var res_info: String = "RESIDENTIAL HOUSING (%d / %d Occupants):\n" % [occ_list.size(), h_cap]
+		if occ_list.is_empty():
+			res_info += "  (No residents assigned — Vacant)\n"
+		else:
+			for occ in occ_list:
+				res_info += "  • %s (%s, %s, Energy: %d)\n" % [
+					occ.get("name", "Citizen"),
+					occ.get("species", "Human"),
+					occ.get("status", "Commoner"),
+					int(occ.get("energy", 100))
+				]
+		inv_text = res_info + "\n" + inv_text
 			
 	label_inspector_inv.text = inv_text
 	
@@ -1044,7 +1094,7 @@ func show_citizen_details(citizen: CitizenState, workplace: BuildingState = null
 	if workplace != null:
 		var wp_def: Dictionary = BuildingCatalog.get_all_defs().get(workplace.definition_id, {})
 		wp_name = "%s (#%d)" % [wp_def.get("display_name", str(workplace.definition_id)), workplace.entity_id]
-	var hm_name: String = "None (Homeless)"
+	var hm_name: String = "None (Homeless — Cannot recover energy)"
 	if home != null:
 		var hm_def: Dictionary = BuildingCatalog.get_all_defs().get(home.definition_id, {})
 		hm_name = "%s (#%d)" % [hm_def.get("display_name", str(home.definition_id)), home.entity_id]

@@ -19,7 +19,8 @@ static func serialize(
 	regional_world: RegionalWorldState = null,
 	guidance = null,
 	event_log = null,
-	scenario_id: StringName = &"crownweft_founding"
+	scenario_id: StringName = &"crownweft_founding",
+	migration_data: Dictionary = {}
 ) -> Dictionary:
 	var gov_dict: Dictionary = {
 		"enacted_policies": {},
@@ -45,6 +46,12 @@ static func serialize(
 		},
 		"guidance": guidance.serialize() if guidance != null else {},
 		"event_log": event_log.serialize() if event_log != null else [],
+		"migration": {
+			"progress": float(migration_data.get("progress", 0.0)),
+			"status": str(migration_data.get("status", "active")),
+			"block_reason": str(migration_data.get("block_reason", "")),
+			"total_migrants": int(migration_data.get("total_migrants", 0))
+		},
 		"government": gov_dict,
 		"diplomacy": diplomacy.serialize() if diplomacy != null else DiplomacyState.new().serialize(),
 		"regional_world": regional_world.serialize() if regional_world != null else RegionalWorldState.new().serialize(),
@@ -208,6 +215,12 @@ static func deserialize(data: Dictionary) -> Dictionary:
 		"economy": EconomyState.new(),
 		"guidance": data.get("guidance", {}),
 		"event_log": data.get("event_log", []),
+		"migration": data.get("migration", {
+			"progress": 0.0,
+			"status": "active",
+			"block_reason": "",
+			"total_migrants": 0
+		}),
 		"buildings": [],
 		"citizens": [],
 		"military_units": [],

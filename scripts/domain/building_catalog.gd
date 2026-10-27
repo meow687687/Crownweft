@@ -279,3 +279,10 @@ static func get_build_time_for_footprint(def_id: StringName, fp: Vector2i) -> in
 	var actual_area: float = float(fp.x * fp.y)
 	var min_time: int = maxi(4, int(ceil(float(base_time) * 0.5)))
 	return maxi(min_time, int(round(float(base_time) * (actual_area / base_area))))
+
+static func get_housing_capacity(def_id: StringName) -> int:
+	var def_info: Dictionary = get_all_defs().get(def_id, {})
+	return int(def_info.get("housing_capacity", 0))
+
+static func is_residential(def_id: StringName) -> bool:
+	return get_housing_capacity(def_id) > 0

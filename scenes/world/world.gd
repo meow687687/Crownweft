@@ -50,6 +50,12 @@ var drag_start_tile: Vector2i = Vector2i(-1, -1)
 var selected_building: BuildingState = null
 var selected_citizen: CitizenState = null
 
+# Migration state
+var migration_progress: float = 0.0 # 0.0 to 100.0 (progress towards newcomer)
+var migration_status: String = "blocked" # "blocked", "attracting", "arrived"
+var migration_block_reason: String = ""
+var total_migrants_arrived: int = 0
+
 func _ready() -> void:
 	_init_simulation()
 	_setup_signals()
@@ -66,6 +72,10 @@ func _init_simulation(scenario_id: StringName = ScenarioCatalog.SCENARIO_FOUNDIN
 	next_entity_id = 1
 	sim_tick_timer = 0.0
 	_last_chronicle_count = 0
+	migration_progress = 0.0
+	migration_status = "blocked"
+	migration_block_reason = "No vacant housing available in settlement."
+	total_migrants_arrived = 0
 
 	current_scenario_id = scenario_id
 	var scn_def: Dictionary = ScenarioCatalog.get_scenario_def(scenario_id)
@@ -1087,6 +1097,9 @@ func _simulation_tick() -> void:
 		for c: CitizenState in citizens:
 			SocialClassService.check_automatic_advancement(c, current_tick)
 
+	# Settlement migration processing
+	tick_migration(needs_report)
+
 	# 4. Create demands, assign jobs, and physically move haulers along A* paths.
 	var citizens_by_id: Dictionary = {}
 	for c: CitizenState in citizens:
@@ -1251,27 +1264,33 @@ func _count_workers_at_building(building: BuildingState) -> int:
 func _update_housing_and_rest() -> void:
 	var defs: Dictionary = BuildingCatalog.get_all_defs()
 	var house_occupants: Dictionary = {} # int -> int
+	var house_capacity: Dictionary = {} # int -> int
 	var available_houses: Array[BuildingState] = []
 	for b: BuildingState in buildings:
-		if b.status == BuildingState.Status.ACTIVE:
-			var cap: int = int(defs.get(b.definition_id, {}).get("housing_capacity", 0))
+		if b.status == BuildingState.Status.ACTIVE and not b.is_destroyed:
+			var cap: int = b.get_housing_capacity()
 			if cap > 0:
 				house_occupants[b.entity_id] = 0
+				house_capacity[b.entity_id] = cap
 				available_houses.append(b)
 
-	# Tally existing occupants
+	# Tally existing occupants, strictly clamping to capacity and evicting overflow
 	for c: CitizenState in citizens:
 		if c.home_building_id > 0:
 			if house_occupants.has(c.home_building_id):
-				house_occupants[c.home_building_id] += 1
+				var h_cap: int = house_capacity[c.home_building_id]
+				if house_occupants[c.home_building_id] < h_cap:
+					house_occupants[c.home_building_id] += 1
+				else:
+					c.home_building_id = 0 # Evict overflow
 			else:
-				c.home_building_id = 0
+				c.home_building_id = 0 # Evict invalid/destroyed/inactive home
 
 	# Assign homeless citizens to houses with free capacity
 	for c: CitizenState in citizens:
 		if c.home_building_id <= 0:
 			for h: BuildingState in available_houses:
-				var cap: int = int(defs.get(h.definition_id, {}).get("housing_capacity", 0))
+				var cap: int = house_capacity[h.entity_id]
 				if house_occupants.get(h.entity_id, 0) < cap:
 					c.home_building_id = h.entity_id
 					house_occupants[h.entity_id] = house_occupants.get(h.entity_id, 0) + 1
@@ -1296,7 +1315,7 @@ func _update_housing_and_rest() -> void:
 				c.home_building_id = 0
 				# Attempt to find another house
 				for h: BuildingState in available_houses:
-					var cap: int = int(defs.get(h.definition_id, {}).get("housing_capacity", 0))
+					var cap: int = house_capacity[h.entity_id]
 					if house_occupants.get(h.entity_id, 0) < cap:
 						c.home_building_id = h.entity_id
 						house_occupants[h.entity_id] = house_occupants.get(h.entity_id, 0) + 1
@@ -1323,6 +1342,169 @@ func _update_housing_and_rest() -> void:
 					c.move_state = CitizenState.MoveState.IDLE
 			else:
 				_route_citizen_to_home(c, home)
+
+func get_total_housing_capacity() -> int:
+	var total: int = 0
+	for b: BuildingState in buildings:
+		if b.status == BuildingState.Status.ACTIVE and not b.is_destroyed:
+			total += b.get_housing_capacity()
+	return total
+
+func get_housed_citizens_count() -> int:
+	var count: int = 0
+	for c: CitizenState in citizens:
+		if c.home_building_id > 0:
+			var home: BuildingState = _find_building_by_entity_id(c.home_building_id)
+			if home != null and home.status == BuildingState.Status.ACTIVE and not home.is_destroyed:
+				count += 1
+	return count
+
+func get_homeless_citizens_count() -> int:
+	return maxi(0, citizens.size() - get_housed_citizens_count())
+
+func get_available_housing_capacity() -> int:
+	return maxi(0, get_total_housing_capacity() - get_housed_citizens_count())
+
+func get_building_occupants(building_id: int) -> Array[CitizenState]:
+	var occ: Array[CitizenState] = []
+	for c: CitizenState in citizens:
+		if c.home_building_id == building_id:
+			occ.append(c)
+	return occ
+
+func assign_citizen_home(citizen: CitizenState, building: BuildingState) -> bool:
+	if citizen == null or building == null:
+		return false
+	if building.status != BuildingState.Status.ACTIVE or building.is_destroyed:
+		return false
+	var cap: int = building.get_housing_capacity()
+	if cap <= 0:
+		return false
+	var cur_occupants: Array[CitizenState] = get_building_occupants(building.entity_id)
+	if cur_occupants.size() >= cap:
+		return false
+	citizen.home_building_id = building.entity_id
+	return true
+
+func unassign_citizen_home(citizen: CitizenState) -> void:
+	if citizen != null:
+		citizen.home_building_id = 0
+
+func tick_migration(needs_report: Dictionary) -> void:
+	# 1. Check Housing Vacancy
+	var vacant_housing: int = get_available_housing_capacity()
+	if vacant_housing <= 0:
+		migration_status = "blocked"
+		migration_block_reason = "No vacant housing available in settlement."
+		return
+
+	# 2. Check Food Security Buffer
+	var available_food: int = 0
+	for b: BuildingState in buildings:
+		if b.status == BuildingState.Status.ACTIVE and not b.is_destroyed and b.definition_id in [&"town_hall", &"storehouse"]:
+			if b.inventory != null:
+				available_food += b.inventory.get_quantity(&"bread") + b.inventory.get_quantity(&"meat") + b.inventory.get_quantity(&"grain")
+	
+	var hungry_count: int = needs_report.get("hungry", 0)
+	var at_risk_count: int = needs_report.get("at_risk", 0)
+	var required_food: int = citizens.size() * 2
+	
+	# Check Immigration Policy
+	var imm_policy: StringName = government.get_policy(LawCatalog.LAW_IMMIGRATION)
+	if imm_policy == &"closed":
+		migration_status = "blocked"
+		migration_block_reason = "Immigration forbidden by government decree."
+		return
+	elif imm_policy == &"selective":
+		required_food = citizens.size() * 4
+		if available_food < required_food or hungry_count > 0 or at_risk_count > 0 or economy.approval < 65.0:
+			migration_status = "blocked"
+			migration_block_reason = "Settlement conditions do not meet selective immigration criteria."
+			return
+	else: # open
+		if available_food < required_food or hungry_count > 0 or at_risk_count > 0:
+			migration_status = "blocked"
+			migration_block_reason = "Settlement food supply insufficient or citizens starving."
+			return
+		if economy.approval < 50.0:
+			migration_status = "blocked"
+			migration_block_reason = "Settlement approval too low to attract newcomers."
+			return
+
+	# Prerequisites satisfied: Accumulate attraction towards next arrival
+	migration_status = "attracting"
+	migration_block_reason = ""
+	
+	var approval_bonus: float = maxf(0.0, (economy.approval - 50.0) * 0.05)
+	var vacancy_bonus: float = minf(2.0, float(vacant_housing) * 0.25)
+	var step: float = clampf(1.0 + approval_bonus + vacancy_bonus, 0.5, 4.0)
+	migration_progress += step
+
+	if migration_progress >= 100.0:
+		migration_progress = 0.0
+		_admit_newcomer()
+
+func _admit_newcomer() -> CitizenState:
+	# Determine spawn tile: Town Hall entrance/origin or default
+	var spawn_pos: Vector2i = world_state.start_settlement_pos
+	for b: BuildingState in buildings:
+		if b.status == BuildingState.Status.ACTIVE and b.definition_id == &"town_hall":
+			spawn_pos = b.get_entrance_tile()
+			break
+
+	# Ensure spawn tile is walkable
+	if pathfinding != null and pathfinding.astar_grid.is_point_solid(spawn_pos):
+		for offset in [Vector2i(0, 1), Vector2i(1, 0), Vector2i(0, -1), Vector2i(-1, 0), Vector2i(1, 1), Vector2i(-1, -1)]:
+			var cand: Vector2i = spawn_pos + offset
+			if not pathfinding.astar_grid.is_point_solid(cand):
+				spawn_pos = cand
+				break
+
+	# Determine species based on immigration policy and distribution
+	var imm_policy: StringName = government.get_policy(LawCatalog.LAW_IMMIGRATION)
+	var s_id: StringName = &"human"
+	if imm_policy == &"selective":
+		if total_migrants_arrived % 3 == 1:
+			s_id = &"dwarf"
+		elif total_migrants_arrived % 3 == 2:
+			s_id = &"elf"
+		else:
+			s_id = &"human"
+	else:
+		var mod: int = total_migrants_arrived % 5
+		if mod == 2:
+			s_id = &"dwarf"
+		elif mod == 4:
+			s_id = &"elf"
+		else:
+			s_id = &"human"
+
+	var st_id: StringName = SocialClassCatalog.DEFAULT_STATUS_ID
+	var c_id: StringName = CultureCatalog.DEFAULT_CULTURE_ID
+	var r_id: StringName = ReligionCatalog.DEFAULT_RELIGION_ID
+	var d_id: StringName = CultureCatalog.get_default_doctrine(c_id)
+
+	var newcomer: CitizenState = spawn_citizen(spawn_pos, &"unassigned", s_id, st_id, c_id, r_id, d_id)
+	
+	# Immediately assign to an active house with available capacity
+	for b: BuildingState in buildings:
+		if b.status == BuildingState.Status.ACTIVE and not b.is_destroyed:
+			var cap: int = b.get_housing_capacity()
+			if cap > 0 and get_building_occupants(b.entity_id).size() < cap:
+				assign_citizen_home(newcomer, b)
+				break
+
+	total_migrants_arrived += 1
+	migration_status = "arrived"
+
+	var species_name: String = SpeciesCatalog.get_display_name(newcomer.species_id)
+	var chronicle_msg: String = "Newcomer arrived: Citizen #%d (%s) immigrated to Crownweft." % [newcomer.id, species_name]
+	if event_log != null:
+		event_log.add_event(&"citizens", chronicle_msg, &"info", current_tick)
+	if ui != null:
+		ui.show_toast(chronicle_msg, false)
+
+	return newcomer
 
 func _route_citizen_to_home(citizen: CitizenState, home: BuildingState) -> void:
 	if not citizen.path.is_empty():
@@ -1487,6 +1669,13 @@ func _update_ui_state(needs_report: Dictionary) -> void:
 	if ui != null:
 		ui.update_resources(total_coin, total_bread, total_grain, total_timber, total_stone)
 		ui.update_population(citizens.size(), needs_report.get("fed", 0), needs_report.get("hungry", 0), needs_report.get("at_risk", 0))
+		ui.update_housing(
+			get_housed_citizens_count(),
+			get_total_housing_capacity(),
+			get_homeless_citizens_count(),
+			migration_status,
+			migration_block_reason
+		)
 		if economy != null:
 			ui.update_economy(economy.get_tax_level_name(), economy.approval)
 	
@@ -1779,6 +1968,12 @@ func _on_scenario_selected(scenario_id: StringName) -> void:
 		ui.show_toast("Started Scenario: %s" % scn_name, false)
 
 func save_game(file_path: String = SaveService.DEFAULT_SAVE_PATH) -> bool:
+	var mig_data: Dictionary = {
+		"progress": migration_progress,
+		"status": migration_status,
+		"block_reason": migration_block_reason,
+		"total_migrants": total_migrants_arrived
+	}
 	var success: bool = SaveService.save_game_to_file(
 		world_state,
 		economy,
@@ -1795,7 +1990,8 @@ func save_game(file_path: String = SaveService.DEFAULT_SAVE_PATH) -> bool:
 		regional_world,
 		guidance,
 		event_log,
-		current_scenario_id
+		current_scenario_id,
+		mig_data
 	)
 	if ui != null:
 		if success:
@@ -1894,6 +2090,17 @@ func apply_loaded_state(loaded: Dictionary) -> void:
 		guidance.deserialize(loaded["guidance"])
 	if loaded.has("event_log") and loaded["event_log"] is Array:
 		event_log.deserialize(loaded["event_log"])
+	if loaded.has("migration") and loaded["migration"] is Dictionary:
+		var mig: Dictionary = loaded["migration"]
+		migration_progress = float(mig.get("progress", 0.0))
+		migration_status = str(mig.get("status", "blocked"))
+		migration_block_reason = str(mig.get("block_reason", ""))
+		total_migrants_arrived = int(mig.get("total_migrants", 0))
+	else:
+		migration_progress = 0.0
+		migration_status = "blocked"
+		migration_block_reason = "No vacant housing available in settlement."
+		total_migrants_arrived = 0
 	var g_info: Dictionary = guidance.update_guidance(self, event_log)
 	_update_ui_state({"fed": 0, "hungry": 0, "at_risk": 0})
 	if ui != null:
@@ -2376,10 +2583,25 @@ func get_building_diagnostic_details(building: BuildingState) -> Dictionary:
 				entry.get("reason", "")
 			])
 
+	var occ_data: Array[Dictionary] = []
+	if building.is_residential():
+		var occupants: Array[CitizenState] = get_building_occupants(building.entity_id)
+		for c: CitizenState in occupants:
+			occ_data.append({
+				"id": c.id,
+				"name": "Citizen #%d" % c.id,
+				"species": SpeciesCatalog.get_display_name(c.species_id),
+				"status": SocialClassCatalog.get_display_name(c.social_status_id),
+				"energy": c.energy
+			})
+
 	return {
 		"assigned_citizens": get_assigned_citizens_for_building(building),
 		"open_slot_reason": slot_reason,
 		"production_chain": get_building_production_chain(building),
-		"recent_transactions": formatted_logs
+		"recent_transactions": formatted_logs,
+		"is_residential": building.is_residential(),
+		"housing_capacity": building.get_housing_capacity(),
+		"occupants": occ_data
 	}
 
