@@ -1,6 +1,8 @@
 class_name GameUI
 extends CanvasLayer
 
+const ScenarioCatalog = preload("res://scripts/domain/scenario_catalog.gd")
+
 signal build_selected(building_id: StringName)
 signal speed_changed(speed_multiplier: float)
 signal toggle_overlay_requested()
@@ -14,6 +16,8 @@ signal recruit_unit_requested(unit_def_id: StringName)
 signal tax_level_cycled()
 signal save_game_requested()
 signal load_game_requested()
+signal scenario_selected(scenario_id: StringName)
+signal toggle_scenario_panel_requested()
 signal toggle_government_panel_requested()
 signal policy_enact_requested(law_id: StringName, option_id: StringName)
 signal toggle_diplomacy_panel_requested()
@@ -118,6 +122,10 @@ var box_region_details: VBoxContainer = null
 var selected_region_id: StringName = RegionCatalog.REGION_CROWNWEFT
 var _last_world_map_data: Dictionary = {}
 
+# Scenario Selection Panel
+var btn_scenarios: Button = null
+var panel_scenario: PanelContainer = null
+
 # Guidance & Objectives Panel
 var panel_guidance: PanelContainer = null
 var label_guidance_stage: Label = null
@@ -217,6 +225,7 @@ func _build_ui_layout() -> void:
 	btn_government = _create_ctrl_button(ctrl_box, "LAWS", func(): toggle_government_panel_requested.emit())
 	btn_diplomacy = _create_ctrl_button(ctrl_box, "DIPLOMACY", func(): toggle_diplomacy_panel_requested.emit())
 	btn_world_map = _create_ctrl_button(ctrl_box, "WORLD MAP", func(): toggle_world_map_panel_requested.emit())
+	btn_scenarios = _create_ctrl_button(ctrl_box, "SCENARIOS", func(): toggle_scenario_panel_requested.emit())
 	_create_ctrl_button(ctrl_box, "SAVE", func(): save_game_requested.emit())
 	_create_ctrl_button(ctrl_box, "LOAD", func(): load_game_requested.emit())
 
@@ -425,6 +434,7 @@ func _build_ui_layout() -> void:
 	_build_world_map_panel()
 	_build_guidance_panel()
 	_build_event_log_panel()
+	_build_scenario_panel()
 
 func _build_guidance_panel() -> void:
 	panel_guidance = PanelContainer.new()
@@ -2703,6 +2713,137 @@ func _get_faction_display_name(faction_id: StringName) -> String:
 			return "Ironpeak Clans"
 		_:
 			return "None"
+
+func _build_scenario_panel() -> void:
+	panel_scenario = PanelContainer.new()
+	panel_scenario.set_anchors_preset(Control.PRESET_CENTER)
+	panel_scenario.offset_left = -440
+	panel_scenario.offset_top = -250
+	panel_scenario.offset_right = 440
+	panel_scenario.offset_bottom = 250
+	panel_scenario.add_theme_stylebox_override("panel", UITheme.create_panel_style(UITheme.COLOR_BG_PANEL, UITheme.COLOR_BORDER_GOLD, 2, 6))
+	panel_scenario.visible = false
+	panel_scenario.mouse_filter = Control.MOUSE_FILTER_STOP
+	add_child(panel_scenario)
+
+	var main_vbox := VBoxContainer.new()
+	main_vbox.add_theme_constant_override("separation", 8)
+	panel_scenario.add_child(main_vbox)
+
+	var header := HBoxContainer.new()
+	header.add_theme_constant_override("separation", 10)
+	main_vbox.add_child(header)
+
+	var title := Label.new()
+	title.text = "REALM SCENARIOS & CHRONICLES"
+	title.add_theme_font_size_override("font_size", 15)
+	title.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(title)
+
+	var btn_close := Button.new()
+	btn_close.text = "X"
+	btn_close.custom_minimum_size = Vector2(28, 26)
+	UITheme.apply_button_style(btn_close)
+	btn_close.pressed.connect(func(): panel_scenario.visible = false)
+	header.add_child(btn_close)
+
+	var desc := Label.new()
+	desc.text = "Select a starting scenario. Each scenario presents distinct economic pressures, diplomatic conditions, or frontier military threats."
+	desc.add_theme_font_size_override("font_size", 10)
+	desc.add_theme_color_override("font_color", UITheme.COLOR_TEXT_MUTED)
+	main_vbox.add_child(desc)
+
+	main_vbox.add_child(HSeparator.new())
+
+	var cards_hbox := HBoxContainer.new()
+	cards_hbox.add_theme_constant_override("separation", 10)
+	cards_hbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	main_vbox.add_child(cards_hbox)
+
+	var all_defs: Dictionary = ScenarioCatalog.get_all_defs()
+	for scn_id in ScenarioCatalog.ALL_SCENARIO_IDS:
+		var scn_def: Dictionary = all_defs.get(scn_id, {})
+		var card := PanelContainer.new()
+		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		card.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		card.add_theme_stylebox_override("panel", UITheme.create_panel_style(Color(0.12, 0.15, 0.22, 0.95), UITheme.COLOR_BORDER, 1, 5))
+		cards_hbox.add_child(card)
+
+		var card_vbox := VBoxContainer.new()
+		card_vbox.add_theme_constant_override("separation", 5)
+		card.add_child(card_vbox)
+
+		# Scenario Name
+		var scn_name := Label.new()
+		scn_name.text = scn_def.get("name", "Scenario")
+		scn_name.add_theme_font_size_override("font_size", 12)
+		scn_name.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+		scn_name.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		card_vbox.add_child(scn_name)
+
+		# Difficulty Badge
+		var diff_label := Label.new()
+		var diff_text: String = scn_def.get("difficulty", "Standard")
+		diff_label.text = "[Difficulty: %s]" % diff_text
+		diff_label.add_theme_font_size_override("font_size", 10)
+		if diff_text == "Challenging":
+			diff_label.add_theme_color_override("font_color", Color(0.95, 0.45, 0.35))
+		elif diff_text == "Complex":
+			diff_label.add_theme_color_override("font_color", Color(0.45, 0.85, 0.95))
+		else:
+			diff_label.add_theme_color_override("font_color", Color(0.45, 0.85, 0.45))
+		card_vbox.add_child(diff_label)
+
+		# Strategic Focus
+		var focus_lbl := Label.new()
+		focus_lbl.text = "Focus: %s" % scn_def.get("strategic_focus", "")
+		focus_lbl.add_theme_font_size_override("font_size", 9)
+		focus_lbl.add_theme_color_override("font_color", Color(0.85, 0.85, 0.85))
+		focus_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		card_vbox.add_child(focus_lbl)
+
+		# Narrative Description
+		var body_lbl := Label.new()
+		body_lbl.text = scn_def.get("description", "")
+		body_lbl.add_theme_font_size_override("font_size", 9)
+		body_lbl.add_theme_color_override("font_color", UITheme.COLOR_TEXT_MUTED)
+		body_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		body_lbl.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		card_vbox.add_child(body_lbl)
+
+		# Constraints
+		var constraints: Array = scn_def.get("constraints", [])
+		if not constraints.is_empty():
+			var con_lbl := Label.new()
+			con_lbl.text = "Key Constraints:\n• " + "\n• ".join(constraints)
+			con_lbl.add_theme_font_size_override("font_size", 9)
+			con_lbl.add_theme_color_override("font_color", Color(0.75, 0.72, 0.65))
+			con_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			card_vbox.add_child(con_lbl)
+
+		var btn_start := Button.new()
+		btn_start.text = "START SCENARIO"
+		btn_start.custom_minimum_size = Vector2(0, 28)
+		UITheme.apply_button_style(btn_start)
+		var chosen_id = scn_id
+		btn_start.pressed.connect(func():
+			scenario_selected.emit(chosen_id)
+			panel_scenario.visible = false
+		)
+		card_vbox.add_child(btn_start)
+
+func toggle_scenario_panel() -> void:
+	if panel_scenario != null:
+		panel_scenario.visible = not panel_scenario.visible
+		if panel_scenario.visible:
+			if panel_workforce != null: panel_workforce.visible = false
+			if panel_government != null: panel_government.visible = false
+			if panel_diplomacy != null: panel_diplomacy.visible = false
+			if panel_world_map != null: panel_world_map.visible = false
+
+func is_scenario_panel_visible() -> bool:
+	return panel_scenario != null and panel_scenario.visible
 
 
 

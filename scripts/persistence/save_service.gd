@@ -18,7 +18,8 @@ static func save_game_to_file(
 	diplomacy: DiplomacyState = null,
 	regional_world: RegionalWorldState = null,
 	guidance = null,
-	event_log = null
+	event_log = null,
+	scenario_id: StringName = &"crownweft_founding"
 ) -> bool:
 	var data: Dictionary = SaveSchema.serialize(
 		world_state,
@@ -34,7 +35,8 @@ static func save_game_to_file(
 		diplomacy,
 		regional_world,
 		guidance,
-		event_log
+		event_log,
+		scenario_id
 	)
 	var json_str: String = JSON.stringify(data, "  ")
 	

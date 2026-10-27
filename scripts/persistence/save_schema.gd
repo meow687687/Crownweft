@@ -18,7 +18,8 @@ static func serialize(
 	diplomacy: DiplomacyState = null,
 	regional_world: RegionalWorldState = null,
 	guidance = null,
-	event_log = null
+	event_log = null,
+	scenario_id: StringName = &"crownweft_founding"
 ) -> Dictionary:
 	var gov_dict: Dictionary = {
 		"enacted_policies": {},
@@ -39,7 +40,8 @@ static func serialize(
 			"seed_val": world_state.seed_val if world_state != null else 0,
 			"current_tick": current_tick,
 			"sim_speed": sim_speed,
-			"auto_staffing_enabled": auto_staffing_enabled
+			"auto_staffing_enabled": auto_staffing_enabled,
+			"scenario_id": str(scenario_id)
 		},
 		"guidance": guidance.serialize() if guidance != null else {},
 		"event_log": event_log.serialize() if event_log != null else [],
@@ -201,6 +203,7 @@ static func deserialize(data: Dictionary) -> Dictionary:
 		
 	var result: Dictionary = {
 		"meta": meta,
+		"scenario_id": StringName(meta.get("scenario_id", "crownweft_founding")),
 		"world_state": null,
 		"economy": EconomyState.new(),
 		"guidance": data.get("guidance", {}),
@@ -210,6 +213,7 @@ static func deserialize(data: Dictionary) -> Dictionary:
 		"military_units": [],
 		"job_board": JobBoard.new()
 	}
+	result["meta"]["scenario_id"] = result["scenario_id"]
 
 	var world_data: Dictionary = data.get("world", {})
 	if not world_data.is_empty():

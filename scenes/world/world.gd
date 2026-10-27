@@ -4,6 +4,7 @@ extends Node2D
 const RoadAutotiler = preload("res://scripts/presentation/road_autotiler.gd")
 const GuidanceService = preload("res://scripts/simulation/guidance_service.gd")
 const EventLogService = preload("res://scripts/simulation/event_log_service.gd")
+const ScenarioCatalog = preload("res://scripts/domain/scenario_catalog.gd")
 
 @onready var camera: RTSCamera = $RTSCamera
 @onready var renderer: WorldRenderer = $WorldRenderer
@@ -25,6 +26,7 @@ var diplomacy_system: DiplomacySystem = DiplomacySystem.new()
 var regional_world: RegionalWorldState = null
 var guidance: GuidanceService = GuidanceService.new()
 var event_log: EventLogService = EventLogService.new()
+var current_scenario_id: StringName = ScenarioCatalog.SCENARIO_FOUNDING
 var _last_chronicle_count: int = 0
 
 var buildings: Array[BuildingState] = []
@@ -52,9 +54,24 @@ func _ready() -> void:
 	_init_simulation()
 	_setup_signals()
 
-func _init_simulation() -> void:
+func _init_simulation(scenario_id: StringName = ScenarioCatalog.SCENARIO_FOUNDING, seed_val: int = 2026) -> void:
+	# 1. Reset runtime entity lists to prevent cross-scenario state contamination
+	buildings.clear()
+	citizens.clear()
+	military_units.clear()
+	selected_units.clear()
+	selected_building = null
+	selected_citizen = null
+	current_tick = 0
+	next_entity_id = 1
+	sim_tick_timer = 0.0
+	_last_chronicle_count = 0
+
+	current_scenario_id = scenario_id
+	var scn_def: Dictionary = ScenarioCatalog.get_scenario_def(scenario_id)
+
 	var gen: WorldGenerationService = WorldGenerationService.new()
-	world_state = gen.generate_world(2026)
+	world_state = gen.generate_world(seed_val)
 	
 	pathfinding = PathfindingService.new(world_state.width, world_state.height)
 	pathfinding.initialize_from_world(world_state)
@@ -71,16 +88,31 @@ func _init_simulation() -> void:
 	government = GovernmentState.new()
 	diplomacy = DiplomacyState.new()
 	diplomacy_system = DiplomacySystem.new()
+
+	# Apply scenario diplomacy modifiers
+	var dip_mods: Dictionary = scn_def.get("diplomacy_mod", {})
+	for f_id in dip_mods:
+		var rel = diplomacy.get_relationship(FactionCatalog.FACTION_PLAYER, f_id)
+		if rel != null:
+			var m: Dictionary = dip_mods[f_id]
+			if m.has("trust"): rel.trust = float(m["trust"])
+			if m.has("threat"): rel.threat = float(m["threat"])
+			if m.has("resentment"): rel.resentment = float(m["resentment"])
+			if m.has("respect"): rel.respect = float(m["respect"])
+			if m.has("economic_cooperation"): rel.economic_cooperation = float(m["economic_cooperation"])
+
 	regional_world = RegionalWorldState.new()
 	regional_world.regions = RegionCatalog.create_default_regions()
 	regional_world.routes = RegionCatalog.create_default_routes()
 	regional_world.selected_region_id = RegionCatalog.REGION_CROWNWEFT
+
+	var crown_guard_supplies: int = scn_def.get("starting_military", {}).get("crown_guard_supplies", 40)
 	regional_world.create_army(
 		FactionCatalog.FACTION_PLAYER,
 		"Royal Crown Guard",
 		RegionCatalog.REGION_CROWNWEFT,
 		{&"warrior": 12, &"archer": 6},
-		40,
+		crown_guard_supplies,
 		0
 	)
 	regional_world.create_army(
@@ -93,60 +125,64 @@ func _init_simulation() -> void:
 	)
 	
 	combat.raid_announced.connect(func(seconds_left: float):
-		ui.show_raid_warning(seconds_left)
+		if ui != null: ui.show_raid_warning(seconds_left)
 	)
 	combat.raid_started.connect(func():
-		ui.show_raid_warning(0.0)
+		if ui != null: ui.show_raid_warning(0.0)
 	)
 	
-	# Spawn Town Hall at settlement origin
+	# Spawn starting buildings
 	var th_pos: Vector2i = world_state.start_settlement_pos
-	var th_building: BuildingState = place_building(&"town_hall", th_pos, true)
-	if th_building != null:
-		# Starting supplies: 60 coin, 25 bread, 30 timber, 15 stone
-		th_building.inventory.add_resource(&"coin", 60, "START_FUNDS")
-		th_building.inventory.add_resource(&"bread", 25, "START_FOOD")
-		th_building.inventory.add_resource(&"timber", 30, "START_TIMBER")
-		th_building.inventory.add_resource(&"stone", 15, "START_STONE")
+	var b_defs: Array = scn_def.get("starting_buildings", [])
+	var town_hall_building: BuildingState = null
 
-	# Starting Farm: complete, active, unstaffed, ready for assignment
-	var farm_pos: Vector2i = th_pos + Vector2i(-4, -4)
-	var starting_farm: BuildingState = place_building(&"farm", farm_pos, true)
-	if starting_farm != null:
-		starting_farm.status = BuildingState.Status.ACTIVE
-		starting_farm.assigned_workers = 0
+	for b_info: Dictionary in b_defs:
+		var def_id: StringName = b_info.get("def_id", &"town_hall")
+		var b_offset: Vector2i = b_info.get("offset", Vector2i.ZERO)
+		var b_pos: Vector2i = th_pos + b_offset
+		var b_state: BuildingState = place_building(def_id, b_pos, true)
+		if b_state != null:
+			if b_info.get("active", true):
+				b_state.status = BuildingState.Status.ACTIVE
+			b_state.assigned_workers = b_info.get("assigned_workers", 0)
+			if def_id == &"town_hall":
+				town_hall_building = b_state
+
+	# Allocate starting supplies
+	if town_hall_building != null:
+		var supplies: Dictionary = scn_def.get("starting_supplies", {})
+		for res_id in supplies:
+			town_hall_building.inventory.add_resource(res_id, supplies[res_id], "START_SUPPLIES")
 
 	# Initial chronicle entry
 	if event_log != null:
-		event_log.add_event(&"system", "Settlement established at Crownweft Valley.", &"info", 0)
+		event_log.clear()
+		event_log.add_event(&"system", "Scenario Begun: %s." % scn_def.get("name", "Crownweft"), &"info", 0)
 		
-	# Initial workforce archetypes: 10 citizens across species, social classes, cultures, convictions
-	var initial_archetypes: Array[Dictionary] = [
-		{"species": &"human", "status": &"commoner", "culture": &"valen", "religion": &"pantheon"},
-		{"species": &"human", "status": &"commoner", "culture": &"valen", "religion": &"pantheon"},
-		{"species": &"greenwarden", "status": &"artisan", "culture": &"sylvanari", "religion": &"old_grove"},
-		{"species": &"stoneborn", "status": &"artisan", "culture": &"khorvath", "religion": &"secular"},
-		{"species": &"human", "status": &"administrator", "culture": &"valen", "religion": &"pantheon"},
-		{"species": &"stoneborn", "status": &"scholar", "culture": &"khorvath", "religion": &"secular"},
-		{"species": &"human", "status": &"merchant", "culture": &"valen", "religion": &"pantheon"},
-		{"species": &"greenwarden", "status": &"commoner", "culture": &"sylvanari", "religion": &"old_grove"},
-		{"species": &"stoneborn", "status": &"commoner", "culture": &"khorvath", "religion": &"secular"},
-		{"species": &"human", "status": &"commoner", "culture": &"sylvanari", "religion": &"pantheon"},
-	]
-
-	# Spawn initial workforce: 10 citizens
-	for i in range(10):
+	# Spawn initial workforce
+	var cit_defs: Array = scn_def.get("starting_citizens", [])
+	for i in range(cit_defs.size()):
+		var arch: Dictionary = cit_defs[i]
 		var c_pos: Vector2i = th_pos + Vector2i(i % 3 - 1, i / 3 + 4)
-		var arch: Dictionary = initial_archetypes[i]
+		var role: StringName = arch.get("role", &"unassigned")
 		var citizen: CitizenState = spawn_citizen(c_pos, &"unassigned", arch["species"], arch["status"], arch["culture"], arch["religion"])
-		
-		# Assign first 2 citizens as dedicated haulers
-		if i < 2:
+		if role == &"hauler":
 			citizen.role_id = &"hauler"
 			logistics.register_hauler(citizen.id, citizen.position_tile)
 
-	# Initial guidance update
+	# Spawn initial local military units (if any)
+	var local_units: Array = scn_def.get("starting_military", {}).get("local_units", [])
+	for u_info: Dictionary in local_units:
+		var u_def_id: StringName = u_info.get("def_id", &"warrior")
+		var offset: Vector2i = u_info.get("offset", Vector2i(-5, -1))
+		var u_pos: Vector2 = Vector2((th_pos.x + offset.x) * 16.0, (th_pos.y + offset.y) * 16.0)
+		var unit: MilitaryUnitState = combat.spawn_player_unit(u_def_id, u_pos)
+		if unit != null:
+			military_units.append(unit)
+
+	# Setup guidance for scenario
 	if guidance != null:
+		guidance.setup_for_scenario(scenario_id)
 		guidance.update_guidance(self, event_log)
 			
 	# Center camera on start settlement
@@ -162,6 +198,14 @@ func _init_simulation() -> void:
 		renderer.selected_units = selected_units
 		renderer.active_jobs = []
 		renderer.queue_redraw()
+
+	if ui != null:
+		var g_info = guidance.update_guidance(self, event_log) if guidance != null else {}
+		ui.update_guidance_panel(g_info)
+		if event_log != null:
+			ui.update_event_log(event_log.events)
+		_update_workforce_panel()
+		ui.update_economy(economy.get_tax_level_name(), economy.approval)
 
 func _setup_signals() -> void:
 	if ui == null:
@@ -217,6 +261,8 @@ func _setup_signals() -> void:
 	)
 	ui.save_game_requested.connect(_on_save_game)
 	ui.load_game_requested.connect(_on_load_game)
+	ui.scenario_selected.connect(_on_scenario_selected)
+	ui.toggle_scenario_panel_requested.connect(_on_toggle_scenario_panel)
 
 func _process(delta: float) -> void:
 	# Update Placement Preview Ghost
@@ -376,6 +422,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			return
 		elif kb_event.keycode == KEY_M and active_build_id == &"":
 			_on_toggle_world_map_panel()
+			get_viewport().set_input_as_handled()
+			return
+		elif kb_event.keycode == KEY_N and active_build_id == &"":
+			_on_toggle_scenario_panel()
 			get_viewport().set_input_as_handled()
 			return
 
@@ -1718,6 +1768,16 @@ func _on_army_resupply_requested(army_id: int) -> void:
 	else:
 		ui.show_toast(res.get("reason", "Resupply failed"), true)
 
+func _on_toggle_scenario_panel() -> void:
+	if ui != null:
+		ui.toggle_scenario_panel()
+
+func _on_scenario_selected(scenario_id: StringName) -> void:
+	_init_simulation(scenario_id)
+	if ui != null:
+		var scn_name: String = ScenarioCatalog.get_scenario_def(scenario_id).get("name", str(scenario_id))
+		ui.show_toast("Started Scenario: %s" % scn_name, false)
+
 func save_game(file_path: String = SaveService.DEFAULT_SAVE_PATH) -> bool:
 	var success: bool = SaveService.save_game_to_file(
 		world_state,
@@ -1734,7 +1794,8 @@ func save_game(file_path: String = SaveService.DEFAULT_SAVE_PATH) -> bool:
 		diplomacy,
 		regional_world,
 		guidance,
-		event_log
+		event_log,
+		current_scenario_id
 	)
 	if ui != null:
 		if success:
@@ -1759,6 +1820,7 @@ func _on_load_game() -> void:
 	load_game()
 
 func apply_loaded_state(loaded: Dictionary) -> void:
+	current_scenario_id = StringName(loaded.get("meta", {}).get("scenario_id", "crownweft_founding"))
 	if loaded.has("world_state") and loaded["world_state"] != null:
 		world_state = loaded["world_state"]
 		if renderer != null:

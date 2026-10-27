@@ -34,7 +34,8 @@ const SUITES: Array[String] = [
 	"res://tests/integration/test_adversarial_failures.gd",
 	"res://tests/integration/test_save_load_determinism.gd",
 	"res://tests/integration/test_playable_alpha.gd",
-	"res://tests/integration/test_alpha_hardening.gd"
+	"res://tests/integration/test_alpha_hardening.gd",
+	"res://tests/integration/test_scenario_variety.gd"
 ]
 
 func _init() -> void:
