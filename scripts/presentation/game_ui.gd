@@ -3,8 +3,12 @@ extends CanvasLayer
 
 const ScenarioCatalog = preload("res://scripts/domain/scenario_catalog.gd")
 
+const CTRL_BUTTON_HEIGHT: float = 28.0
+const BUILD_PALETTE_ORDER: Array[StringName] = [&"house", &"farm", &"woodcutter", &"quarry", &"bakery", &"storehouse", &"barracks", &"road"]
+
 signal build_selected(building_id: StringName)
 signal speed_changed(speed_multiplier: float)
+signal pause_toggle_requested()
 signal toggle_overlay_requested()
 signal worker_assignment_changed(delta: int)
 signal building_priority_changed(delta: int)
@@ -33,6 +37,11 @@ signal guidance_minimized_toggled(minimized: bool)
 signal toggle_event_log_requested()
 signal toggle_incident_dialog_requested()
 signal incident_decision_requested(incident_id: StringName, option_id: StringName)
+
+# Modal dialogs (workforce, laws, diplomacy, map, scenarios, incidents)
+const MODAL_TOP: float = 100.0
+var modal_backdrop: ColorRect = null
+var modal_panels: Array[PanelContainer] = []
 
 # Top Bar Elements
 var label_coin: Label = null
@@ -183,12 +192,13 @@ func _build_ui_layout() -> void:
 	var top_box := VBoxContainer.new()
 	top_box.add_theme_constant_override("separation", 5)
 	top_panel.add_child(top_box)
+	# Row one: realm stock on the left, time and file controls on the right.
 	var resources_row := HBoxContainer.new()
-	resources_row.add_theme_constant_override("separation", 22)
+	resources_row.add_theme_constant_override("separation", 18)
 	top_box.add_child(resources_row)
 	var lbl_brand := Label.new()
 	lbl_brand.text = "CROWNWEFT"
-	lbl_brand.custom_minimum_size = Vector2(150, 0)
+	lbl_brand.custom_minimum_size = Vector2(130, 0)
 	lbl_brand.add_theme_font_size_override("font_size", 16)
 	lbl_brand.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
 	resources_row.add_child(lbl_brand)
@@ -200,52 +210,50 @@ func _build_ui_layout() -> void:
 	var grow_spacer := Control.new()
 	grow_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	resources_row.add_child(grow_spacer)
-	var lbl_phase := Label.new()
-	lbl_phase.text = "REALM SIMULATION  /  v0.1"
-	lbl_phase.add_theme_font_size_override("font_size", 10)
-	lbl_phase.add_theme_color_override("font_color", UITheme.COLOR_TEXT_MUTED)
-	resources_row.add_child(lbl_phase)
+	var time_box := HBoxContainer.new()
+	time_box.add_theme_constant_override("separation", 4)
+	resources_row.add_child(time_box)
+	btn_speed_pause = _create_ctrl_button(time_box, "PAUSE", func(): pause_toggle_requested.emit(), "Pause or resume the simulation [Space]")
+	btn_speed_1x = _create_ctrl_button(time_box, "1x", func(): _on_speed_clicked(1.0), "Normal speed [1]")
+	btn_speed_2x = _create_ctrl_button(time_box, "2x", func(): _on_speed_clicked(2.0), "Double speed [2]")
+	btn_speed_3x = _create_ctrl_button(time_box, "3x", func(): _on_speed_clicked(3.0), "Triple speed [3]")
+	btn_speed_pause.custom_minimum_size = Vector2(58, CTRL_BUTTON_HEIGHT)
+	btn_speed_1x.custom_minimum_size = Vector2(36, CTRL_BUTTON_HEIGHT)
+	btn_speed_2x.custom_minimum_size = Vector2(36, CTRL_BUTTON_HEIGHT)
+	btn_speed_3x.custom_minimum_size = Vector2(36, CTRL_BUTTON_HEIGHT)
+	speed_buttons = [btn_speed_pause, btn_speed_1x, btn_speed_2x, btn_speed_3x]
+	_highlight_speed_button(btn_speed_1x)
+	var file_box := HBoxContainer.new()
+	file_box.add_theme_constant_override("separation", 4)
+	resources_row.add_child(file_box)
+	_create_ctrl_button(file_box, "SAVE", func(): save_game_requested.emit(), "Save the realm")
+	_create_ctrl_button(file_box, "LOAD", func(): load_game_requested.emit(), "Load the last saved realm")
 
+	# Row two: settlement health on the left, realm panels on the right.
 	var status_row := HBoxContainer.new()
-	status_row.add_theme_constant_override("separation", 16)
+	status_row.add_theme_constant_override("separation", 14)
 	top_box.add_child(status_row)
 	label_population = _create_badge(status_row, "POPULATION", "10 FED", Color("#9ed7e7"))
 	label_housing = _create_badge(status_row, "HOUSING", "0/0", UITheme.COLOR_RED_ALERT)
 	label_approval = _create_badge(status_row, "APPROVAL", "60%", UITheme.COLOR_GREEN_OK)
-	btn_tax = Button.new()
-	btn_tax.text = "TAX: NORMAL"
-	btn_tax.custom_minimum_size = Vector2(118, 28)
-	UITheme.apply_button_style(btn_tax)
-	btn_tax.pressed.connect(func(): tax_level_cycled.emit())
-	status_row.add_child(btn_tax)
+	btn_tax = _create_ctrl_button(status_row, "TAX: NORMAL", func(): tax_level_cycled.emit(), "Cycle the tax level: Low, Normal, High")
 	var status_spacer := Control.new()
 	status_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	status_row.add_child(status_spacer)
 	var ctrl_box := HBoxContainer.new()
-	ctrl_box.add_theme_constant_override("separation", 5)
+	ctrl_box.add_theme_constant_override("separation", 4)
 	status_row.add_child(ctrl_box)
-	btn_speed_pause = _create_ctrl_button(ctrl_box, "PAUSE", func(): _on_speed_clicked(0.0))
-	btn_speed_1x = _create_ctrl_button(ctrl_box, "1x", func(): _on_speed_clicked(1.0))
-	btn_speed_2x = _create_ctrl_button(ctrl_box, "2x", func(): _on_speed_clicked(2.0))
-	btn_speed_3x = _create_ctrl_button(ctrl_box, "3x", func(): _on_speed_clicked(3.0))
-	btn_speed_pause.custom_minimum_size = Vector2(62, 28)
-	btn_speed_1x.custom_minimum_size = Vector2(42, 28)
-	btn_speed_2x.custom_minimum_size = Vector2(42, 28)
-	btn_speed_3x.custom_minimum_size = Vector2(42, 28)
-	speed_buttons = [btn_speed_pause, btn_speed_1x, btn_speed_2x, btn_speed_3x]
-	_highlight_speed_button(btn_speed_1x)
-	btn_overlay = _create_ctrl_button(ctrl_box, "LOGISTICS", func(): toggle_overlay_requested.emit())
-	btn_workforce = _create_ctrl_button(ctrl_box, "WORKFORCE", func(): toggle_workforce_panel_requested.emit())
-	btn_government = _create_ctrl_button(ctrl_box, "LAWS", func(): toggle_government_panel_requested.emit())
-	btn_diplomacy = _create_ctrl_button(ctrl_box, "DIPLOMACY", func(): toggle_diplomacy_panel_requested.emit())
-	btn_world_map = _create_ctrl_button(ctrl_box, "WORLD MAP", func(): toggle_world_map_panel_requested.emit())
-	btn_scenarios = _create_ctrl_button(ctrl_box, "SCENARIOS", func(): toggle_scenario_panel_requested.emit())
-	btn_incidents = _create_ctrl_button(ctrl_box, "INCIDENTS (0)", func(): toggle_incident_dialog_requested.emit())
-	_create_ctrl_button(ctrl_box, "SAVE", func(): save_game_requested.emit())
-	_create_ctrl_button(ctrl_box, "LOAD", func(): load_game_requested.emit())
+	btn_incidents = _create_ctrl_button(ctrl_box, "INCIDENTS (0)", func(): toggle_incident_dialog_requested.emit(), "Civic incidents awaiting your decision [I]")
+	btn_workforce = _create_ctrl_button(ctrl_box, "WORKFORCE", func(): toggle_workforce_panel_requested.emit(), "Citizens and job assignments [P]")
+	btn_government = _create_ctrl_button(ctrl_box, "LAWS", func(): toggle_government_panel_requested.emit(), "Government and laws [L]")
+	btn_diplomacy = _create_ctrl_button(ctrl_box, "DIPLOMACY", func(): toggle_diplomacy_panel_requested.emit(), "Neighbouring realms [F]")
+	btn_world_map = _create_ctrl_button(ctrl_box, "MAP", func(): toggle_world_map_panel_requested.emit(), "Regional world map [M]")
+	btn_scenarios = _create_ctrl_button(ctrl_box, "SCENARIOS", func(): toggle_scenario_panel_requested.emit(), "Start a different scenario [N]")
+	btn_overlay = _create_ctrl_button(ctrl_box, "ROUTES", func(): toggle_overlay_requested.emit(), "Show or hide hauling routes on the map")
 
 	panel_build_prompt = PanelContainer.new()
 	panel_build_prompt.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	panel_build_prompt.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	panel_build_prompt.offset_top = 108
 	panel_build_prompt.add_theme_stylebox_override("panel", UITheme.create_panel_style(Color(0.15, 0.18, 0.25, 0.97), UITheme.COLOR_ACCENT_GOLD, 2, 5))
 	panel_build_prompt.visible = false
@@ -259,6 +267,7 @@ func _build_ui_layout() -> void:
 
 	panel_raid_alert = PanelContainer.new()
 	panel_raid_alert.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	panel_raid_alert.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	panel_raid_alert.offset_top = 148
 	panel_raid_alert.add_theme_stylebox_override("panel", UITheme.create_panel_style(Color(0.28, 0.08, 0.08, 0.97), UITheme.COLOR_RED_ALERT, 2, 5))
 	panel_raid_alert.visible = false
@@ -272,6 +281,7 @@ func _build_ui_layout() -> void:
 
 	panel_toast = PanelContainer.new()
 	panel_toast.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	panel_toast.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	panel_toast.offset_top = 188
 	panel_toast.add_theme_stylebox_override("panel", UITheme.create_panel_style(UITheme.COLOR_BG_PANEL, UITheme.COLOR_BORDER, 1, 5))
 	panel_toast.visible = false
@@ -298,25 +308,17 @@ func _build_ui_layout() -> void:
 	bottom_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	bottom_box.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	bottom_panel.add_child(bottom_box)
-	var build_options: Array[Dictionary] = [
-		{"id": &"house", "label": "HOUSE\n4 Timber"},
-		{"id": &"farm", "label": "FARM\n5 Timber"},
-		{"id": &"woodcutter", "label": "WOODCUTTER\n2 Timber"},
-		{"id": &"quarry", "label": "QUARRY\n6 Timber"},
-		{"id": &"bakery", "label": "BAKERY\n4 Timber · 4 Stone"},
-		{"id": &"storehouse", "label": "STOREHOUSE\n8 Timber · 4 Stone"},
-		{"id": &"barracks", "label": "BARRACKS\n10 Timber · 8 Stone"},
-		{"id": &"road", "label": "ROAD\nFree"}
-	]
-	for option: Dictionary in build_options:
+	# Labels and costs come from the catalog so the palette can never drift from the rules.
+	var building_defs: Dictionary = BuildingCatalog.get_all_defs()
+	for building_id: StringName in BUILD_PALETTE_ORDER:
 		var btn := Button.new()
-		btn.text = option["label"]
+		btn.text = _build_button_label(building_id, building_defs.get(building_id, {}))
+		btn.tooltip_text = _build_button_tooltip(building_id, building_defs.get(building_id, {}))
 		btn.custom_minimum_size = Vector2(0, 46)
 		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		btn.size_flags_vertical = Control.SIZE_EXPAND_FILL
 		btn.add_theme_font_size_override("font_size", 11)
 		UITheme.apply_button_style(btn)
-		var building_id: StringName = option["id"]
 		btn.pressed.connect(func(): _on_build_btn_pressed(building_id))
 		bottom_box.add_child(btn)
 		build_buttons[building_id] = btn
@@ -334,6 +336,8 @@ func _build_ui_layout() -> void:
 	var insp_scroll := ScrollContainer.new()
 	insp_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	insp_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	# Content wraps to the drawer width; a sideways scrollbar only hid text.
+	insp_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	panel_inspector.add_child(insp_scroll)
 	var insp_box := VBoxContainer.new()
 	insp_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -347,6 +351,7 @@ func _build_ui_layout() -> void:
 	label_inspector_title.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
 	label_inspector_title.add_theme_font_size_override("font_size", 14)
 	label_inspector_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	label_inspector_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	header_box.add_child(label_inspector_title)
 	var btn_close := Button.new()
 	btn_close.text = "X"
@@ -358,6 +363,7 @@ func _build_ui_layout() -> void:
 	label_inspector_status = Label.new()
 	label_inspector_status.text = "STATUS: IDLE"
 	label_inspector_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	label_inspector_status.add_theme_font_size_override("font_size", 13)
 	insp_box.add_child(label_inspector_status)
 	progress_inspector = ProgressBar.new()
 	progress_inspector.custom_minimum_size = Vector2(0, 10)
@@ -370,16 +376,17 @@ func _build_ui_layout() -> void:
 	label_priority = Label.new()
 	label_priority.text = "Priority: 3 (Normal)"
 	label_priority.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	label_priority.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	label_priority.add_theme_font_size_override("font_size", 12)
 	box_priority.add_child(label_priority)
 	var btn_pri_minus := Button.new()
-	btn_pri_minus.text = "[-]"
+	btn_pri_minus.text = "-"
 	btn_pri_minus.custom_minimum_size = Vector2(30, 24)
 	UITheme.apply_button_style(btn_pri_minus)
 	btn_pri_minus.pressed.connect(func(): building_priority_changed.emit(-1))
 	box_priority.add_child(btn_pri_minus)
 	var btn_pri_plus := Button.new()
-	btn_pri_plus.text = "[+]"
+	btn_pri_plus.text = "+"
 	btn_pri_plus.custom_minimum_size = Vector2(30, 24)
 	UITheme.apply_button_style(btn_pri_plus)
 	btn_pri_plus.pressed.connect(func(): building_priority_changed.emit(1))
@@ -390,6 +397,8 @@ func _build_ui_layout() -> void:
 	label_inspector_workers = Label.new()
 	label_inspector_workers.text = "Workers: 0 / 0"
 	label_inspector_workers.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	label_inspector_workers.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	label_inspector_workers.add_theme_font_size_override("font_size", 12)
 	box_workers.add_child(label_inspector_workers)
 	var btn_w_minus := Button.new()
 	btn_w_minus.text = "-"
@@ -443,14 +452,94 @@ func _build_ui_layout() -> void:
 	btn_archer.pressed.connect(func(): recruit_unit_requested.emit(&"archer"))
 	box_recruitment.add_child(btn_archer)
 
+	# HUD side panels first, then the modal layer, so dialogs always draw on top.
+	_build_guidance_panel()
+	_build_event_log_panel()
+	_build_modal_backdrop()
 	_build_workforce_panel()
 	_build_government_panel()
 	_build_diplomacy_panel()
 	_build_world_map_panel()
-	_build_guidance_panel()
-	_build_event_log_panel()
 	_build_scenario_panel()
 	_build_incident_panel()
+	for modal: PanelContainer in [panel_workforce, panel_government, panel_diplomacy, panel_world_map, panel_scenario, panel_incident]:
+		_register_modal(modal)
+
+func _build_modal_backdrop() -> void:
+	modal_backdrop = ColorRect.new()
+	modal_backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
+	modal_backdrop.offset_top = MODAL_TOP
+	modal_backdrop.color = Color(0.0, 0.0, 0.0, 0.5)
+	modal_backdrop.visible = false
+	modal_backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	modal_backdrop.gui_input.connect(func(event: InputEvent):
+		if event is InputEventMouseButton and event.pressed:
+			close_all_modals()
+	)
+	add_child(modal_backdrop)
+
+# Modals are mutually exclusive and share one dimmed backdrop. Hooking the
+# visibility signal keeps that true no matter which code path shows or hides one.
+func _register_modal(panel: PanelContainer) -> void:
+	if panel == null:
+		return
+	modal_panels.append(panel)
+	panel.visibility_changed.connect(func(): _on_modal_visibility_changed(panel))
+
+func _on_modal_visibility_changed(changed: PanelContainer) -> void:
+	if changed.visible:
+		for other: PanelContainer in modal_panels:
+			if other != changed and other.visible:
+				other.visible = false
+	if modal_backdrop != null:
+		modal_backdrop.visible = is_any_modal_open()
+
+func is_any_modal_open() -> bool:
+	for panel: PanelContainer in modal_panels:
+		if panel.visible:
+			return true
+	return false
+
+func close_all_modals() -> bool:
+	var closed_any: bool = false
+	for panel: PanelContainer in modal_panels:
+		if panel.visible:
+			panel.visible = false
+			closed_any = true
+	return closed_any
+
+func _format_cost(cost: Dictionary) -> String:
+	if cost.is_empty():
+		return "Free"
+	var parts: PackedStringArray = []
+	for resource_id in cost:
+		parts.append("%d %s" % [int(cost[resource_id]), str(resource_id).capitalize()])
+	return " · ".join(parts)
+
+func _build_button_label(building_id: StringName, def_info: Dictionary) -> String:
+	if building_id == &"road":
+		return "ROAD\nFree"
+	var display_name: String = str(def_info.get("display_name", str(building_id).capitalize()))
+	var cost_label: String = _format_cost(def_info.get("cost", {}))
+	if def_info.get("is_resizable", false):
+		cost_label += "*"
+	return "%s\n%s" % [display_name.to_upper(), cost_label]
+
+func _build_button_tooltip(building_id: StringName, def_info: Dictionary) -> String:
+	if building_id == &"road":
+		return "Left-click a tile to lay a road."
+	var footprint: Vector2i = def_info.get("footprint", Vector2i(2, 2))
+	var lines: PackedStringArray = ["Size %dx%d%s" % [footprint.x, footprint.y, " (resizable)" if def_info.get("is_resizable", false) else ""]]
+	if def_info.get("is_resizable", false):
+		lines.append("* Cost and capacity vary with size.")
+	var worker_slots: int = int(def_info.get("worker_slots", 0))
+	if worker_slots > 0:
+		lines.append("Worker slots: %d" % worker_slots)
+	var housing: int = int(def_info.get("housing_capacity", 0))
+	if housing > 0:
+		lines.append("Houses %d citizens" % housing)
+	lines.append("Storage: %d" % int(def_info.get("capacity", 0)))
+	return "\n".join(lines)
 
 func _build_guidance_panel() -> void:
 	panel_guidance = PanelContainer.new()
@@ -515,7 +604,7 @@ func _build_guidance_panel() -> void:
 	act_panel.add_child(act_vbox)
 
 	label_guidance_action = Label.new()
-	label_guidance_action.text = "ACTION: Select Farm or press 'W' to assign a farmer."
+	label_guidance_action.text = "ACTION: Select the Farm or press 'P' to assign a farmer."
 	label_guidance_action.add_theme_color_override("font_color", Color("#9ed7e7"))
 	label_guidance_action.add_theme_font_size_override("font_size", 11)
 	label_guidance_action.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -651,13 +740,19 @@ func _create_badge(parent: Node, title: String, val: String, col: Color) -> Labe
 	parent.add_child(lbl)
 	return lbl
 
-func _create_ctrl_button(parent: Node, text: String, on_pressed: Callable) -> Button:
+func _create_ctrl_button(parent: Node, text: String, on_pressed: Callable, tooltip: String = "") -> Button:
 	var btn: Button = Button.new()
 	btn.text = text
+	btn.tooltip_text = tooltip
+	btn.custom_minimum_size = Vector2(0, CTRL_BUTTON_HEIGHT)
+	btn.add_theme_font_size_override("font_size", 12)
 	UITheme.apply_button_style(btn)
 	btn.pressed.connect(on_pressed)
 	parent.add_child(btn)
 	return btn
+
+func select_speed(speed: float) -> void:
+	_on_speed_clicked(speed)
 
 func _on_speed_clicked(speed: float) -> void:
 	speed_changed.emit(speed)
@@ -737,7 +832,7 @@ func update_population(total: int, fed: int, hungry: int, at_risk: int) -> void:
 			label_population.text = "POPULATION  %d FED" % total
 			label_population.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
 		else:
-			label_population.text = "POPULATION  %d  |  %d HUNGRY  |  %d AT RISK" % [total, hungry, at_risk]
+			label_population.text = "POPULATION  %d  (%d HUNGRY, %d AT RISK)" % [total, hungry, at_risk]
 			label_population.add_theme_color_override("font_color", UITheme.COLOR_RED_ALERT)
 
 func update_housing(housed: int, total_capacity: int, homeless: int, migration_status: String, block_reason: String = "") -> void:
@@ -751,10 +846,10 @@ func update_housing(housed: int, total_capacity: int, homeless: int, migration_s
 		else:
 			var vacancy: int = total_capacity - housed
 			if migration_status == "attracting":
-				label_housing.text = "HOUSING  %d/%d  (+%d VACANT | ATTRACTING)" % [housed, total_capacity, vacancy]
+				label_housing.text = "HOUSING  %d/%d  (+%d VACANT, ATTRACTING)" % [housed, total_capacity, vacancy]
 				label_housing.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
 			elif migration_status == "arrived":
-				label_housing.text = "HOUSING  %d/%d  (+%d VACANT | ARRIVED)" % [housed, total_capacity, vacancy]
+				label_housing.text = "HOUSING  %d/%d  (+%d VACANT, ARRIVED)" % [housed, total_capacity, vacancy]
 				label_housing.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
 			else:
 				label_housing.text = "HOUSING  %d/%d  (+%d VACANT)" % [housed, total_capacity, vacancy]
@@ -807,6 +902,7 @@ func show_building_details(building: BuildingState, def_info: Dictionary, worker
 				w_info.get("skill_val", 50)
 			]
 			w_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			w_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			w_lbl.add_theme_font_size_override("font_size", 11)
 			row.add_child(w_lbl)
 			var btn_un := Button.new()
@@ -1632,9 +1728,9 @@ func _build_diplomacy_panel() -> void:
 	panel_diplomacy = PanelContainer.new()
 	panel_diplomacy.set_anchors_preset(Control.PRESET_CENTER)
 	panel_diplomacy.offset_left = -380
-	panel_diplomacy.offset_top = -260
+	panel_diplomacy.offset_top = -252
 	panel_diplomacy.offset_right = 380
-	panel_diplomacy.offset_bottom = 260
+	panel_diplomacy.offset_bottom = 268
 	panel_diplomacy.add_theme_stylebox_override("panel", UITheme.create_panel_style(UITheme.COLOR_BG_PANEL, UITheme.COLOR_BORDER_GOLD, 2, 6))
 	panel_diplomacy.visible = false
 	panel_diplomacy.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -2108,9 +2204,9 @@ func _build_world_map_panel() -> void:
 	panel_world_map = PanelContainer.new()
 	panel_world_map.set_anchors_preset(Control.PRESET_CENTER)
 	panel_world_map.offset_left = -440
-	panel_world_map.offset_top = -280
+	panel_world_map.offset_top = -252
 	panel_world_map.offset_right = 440
-	panel_world_map.offset_bottom = 280
+	panel_world_map.offset_bottom = 300
 	panel_world_map.add_theme_stylebox_override("panel", UITheme.create_panel_style(UITheme.COLOR_BG_PANEL, UITheme.COLOR_BORDER_GOLD, 2, 6))
 	panel_world_map.visible = false
 	panel_world_map.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -2181,12 +2277,6 @@ func toggle_world_map_panel() -> void:
 	if panel_world_map != null:
 		panel_world_map.visible = not panel_world_map.visible
 		if panel_world_map.visible:
-			if panel_workforce != null:
-				panel_workforce.visible = false
-			if panel_government != null:
-				panel_government.visible = false
-			if panel_diplomacy != null:
-				panel_diplomacy.visible = false
 			_refresh_world_map()
 
 func is_world_map_visible() -> bool:
@@ -2906,11 +2996,6 @@ func _build_scenario_panel() -> void:
 func toggle_scenario_panel() -> void:
 	if panel_scenario != null:
 		panel_scenario.visible = not panel_scenario.visible
-		if panel_scenario.visible:
-			if panel_workforce != null: panel_workforce.visible = false
-			if panel_government != null: panel_government.visible = false
-			if panel_diplomacy != null: panel_diplomacy.visible = false
-			if panel_world_map != null: panel_world_map.visible = false
 
 func is_scenario_panel_visible() -> bool:
 	return panel_scenario != null and panel_scenario.visible
@@ -3104,12 +3189,6 @@ func close_incident_dialog_if_open(incident_id: StringName = &"") -> void:
 func toggle_incident_dialog() -> void:
 	if panel_incident != null:
 		panel_incident.visible = not panel_incident.visible
-		if panel_incident.visible:
-			if panel_workforce != null: panel_workforce.visible = false
-			if panel_government != null: panel_government.visible = false
-			if panel_diplomacy != null: panel_diplomacy.visible = false
-			if panel_world_map != null: panel_world_map.visible = false
-			if panel_scenario != null: panel_scenario.visible = false
 
 func is_incident_dialog_visible() -> bool:
 	return panel_incident != null and panel_incident.visible

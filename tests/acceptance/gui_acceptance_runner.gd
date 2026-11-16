@@ -28,26 +28,26 @@ func _run_acceptance_tests() -> void:
 	var ui: GameUI = world.ui
 	assert(ui != null, "UI must not be null")
 	
-	# Check 1: The workforce panel opens using W and the HUD button
-	print("\n>> Check 1: Workforce panel opens using W and HUD button...")
+	# Check 1: The workforce panel opens using P and the HUD button
+	print("\n>> Check 1: Workforce panel opens using P and HUD button...")
 	assert(not ui.is_workforce_panel_visible(), "Workforce panel initially closed")
 	
-	# Press W key
+	# Press P key
 	var key_ev := InputEventKey.new()
-	key_ev.keycode = KEY_W
+	key_ev.keycode = KEY_P
 	key_ev.pressed = true
 	world._unhandled_input(key_ev)
-	assert(ui.is_workforce_panel_visible(), "Workforce panel opened with KEY_W")
+	assert(ui.is_workforce_panel_visible(), "Workforce panel opened with KEY_P")
 	
-	# Toggle off with W key
+	# Toggle off with P key
 	world._unhandled_input(key_ev)
-	assert(not ui.is_workforce_panel_visible(), "Workforce panel closed with KEY_W")
+	assert(not ui.is_workforce_panel_visible(), "Workforce panel closed with KEY_P")
 	
 	# Open using HUD button
 	ui.btn_workforce.emit_signal("pressed")
 	assert(ui.is_workforce_panel_visible(), "Workforce panel opened via HUD button")
 	await _save_screenshot("01_workforce_panel_opened")
-	print("✓ Check 1 Verified: Panel opens via W and HUD button.")
+	print("✓ Check 1 Verified: Panel opens via P and HUD button.")
 	
 	# Check 2: All population counters reflect actual citizen states
 	print("\n>> Check 2: Population counters reflect actual citizen states...")

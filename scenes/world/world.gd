@@ -43,6 +43,7 @@ var sim_speed_multiplier: float = 1.0 # 0.0 = pause, 1.0 = 1x, 2.0 = 2x, 3.0 = 3
 var sim_tick_timer: float = 0.0
 const BASE_TICK_RATE: float = 0.25 # 4 ticks per real second at 1x
 var current_tick: int = 0
+var _speed_before_pause: float = 1.0
 
 # Placement / Selection state
 var active_build_id: StringName = &""
@@ -228,6 +229,7 @@ func _setup_signals() -> void:
 	ui.speed_changed.connect(func(speed: float):
 		sim_speed_multiplier = speed
 	)
+	ui.pause_toggle_requested.connect(_toggle_pause)
 	ui.build_selected.connect(func(b_id: StringName):
 		active_build_id = b_id
 		var def_info: Dictionary = BuildingCatalog.get_all_defs().get(b_id, {})
@@ -422,27 +424,88 @@ func _find_inventory_by_id(inventory_id: int) -> Inventory:
 			return building.construction_inventory
 	return null
 
+# Keyboard shortcuts. WASD and the arrow keys belong to the camera, so panel
+# keys avoid them. Returns true when the key was used.
+func _handle_hotkey(keycode: Key) -> bool:
+	match keycode:
+		KEY_ESCAPE:
+			if active_build_id != &"":
+				_cancel_build_mode()
+			elif ui != null and ui.close_all_modals():
+				pass
+			else:
+				_clear_selection()
+			return true
+		KEY_SPACE:
+			_toggle_pause()
+			return true
+		KEY_1:
+			_set_speed(1.0)
+			return true
+		KEY_2:
+			_set_speed(2.0)
+			return true
+		KEY_3:
+			_set_speed(3.0)
+			return true
+	if active_build_id != &"":
+		return false
+	match keycode:
+		KEY_P:
+			_on_toggle_workforce_panel()
+		KEY_L:
+			_on_toggle_government_panel()
+		KEY_F:
+			_on_toggle_diplomacy_panel()
+		KEY_M:
+			_on_toggle_world_map_panel()
+		KEY_N:
+			_on_toggle_scenario_panel()
+		KEY_I:
+			_on_toggle_incident_dialog()
+		_:
+			return false
+	return true
+
+func _set_speed(speed: float) -> void:
+	if ui != null:
+		ui.select_speed(speed)
+	else:
+		sim_speed_multiplier = speed
+
+func _toggle_pause() -> void:
+	if sim_speed_multiplier > 0.0:
+		_speed_before_pause = sim_speed_multiplier
+		_set_speed(0.0)
+	else:
+		_set_speed(_speed_before_pause)
+
+func _cancel_build_mode() -> void:
+	is_dragging_footprint = false
+	drag_start_tile = Vector2i(-1, -1)
+	active_build_id = &""
+	active_build_footprint = Vector2i.ZERO
+	renderer.active_build_id = &""
+	renderer.hover_tile = Vector2i(-1, -1)
+	renderer.hover_footprint = Vector2i.ZERO
+	renderer.queue_redraw()
+	if ui != null:
+		ui.set_active_build_mode(&"")
+		ui.show_toast("Build mode cancelled", false)
+
+func _clear_selection() -> void:
+	selected_building = null
+	selected_citizen = null
+	selected_units.clear()
+	renderer.selected_building = null
+	renderer.selected_units = selected_units
+	renderer.queue_redraw()
+	if ui != null:
+		ui.show_building_details(null, {})
+
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
-		var kb_event: InputEventKey = event as InputEventKey
-		if kb_event.keycode == KEY_W and active_build_id == &"":
-			_on_toggle_workforce_panel()
-			get_viewport().set_input_as_handled()
-			return
-		elif kb_event.keycode == KEY_L and active_build_id == &"":
-			_on_toggle_government_panel()
-			get_viewport().set_input_as_handled()
-			return
-		elif kb_event.keycode == KEY_D and active_build_id == &"":
-			_on_toggle_diplomacy_panel()
-			get_viewport().set_input_as_handled()
-			return
-		elif kb_event.keycode == KEY_M and active_build_id == &"":
-			_on_toggle_world_map_panel()
-			get_viewport().set_input_as_handled()
-			return
-		elif kb_event.keycode == KEY_N and active_build_id == &"":
-			_on_toggle_scenario_panel()
+		if _handle_hotkey((event as InputEventKey).keycode):
 			get_viewport().set_input_as_handled()
 			return
 
@@ -469,28 +532,9 @@ func _unhandled_input(event: InputEvent) -> void:
 				return
 
 	if event is InputEventMouseButton:
+		# Clicks on HUD panels and dialogs are consumed by those controls and never
+		# arrive here, so everything below is a click on the world itself.
 		var mb: InputEventMouseButton = event as InputEventMouseButton
-		
-		# Protection: Ignore clicks if mouse is over top HUD, bottom palette, inspector, or workforce panel
-		var mouse_screen: Vector2 = get_viewport().get_mouse_position()
-		var screen_size: Vector2 = get_viewport().get_visible_rect().size
-		if mouse_screen.y < 104.0 or mouse_screen.y > (screen_size.y - 142.0):
-			return
-		if ui != null and ui.panel_workforce != null and ui.panel_workforce.visible:
-			var wf_rect := Rect2(screen_size * 0.5 - Vector2(340, 250), Vector2(680, 500))
-			if wf_rect.has_point(mouse_screen):
-				return
-		if ui != null and ui.panel_government != null and ui.panel_government.visible:
-			var gov_rect := Rect2(screen_size * 0.5 - Vector2(340, 250), Vector2(680, 500))
-			if gov_rect.has_point(mouse_screen):
-				return
-		if ui != null and ui.panel_diplomacy != null and ui.panel_diplomacy.visible:
-			var dip_rect := Rect2(screen_size * 0.5 - Vector2(380, 260), Vector2(760, 520))
-			if dip_rect.has_point(mouse_screen):
-				return
-		if ui != null and ui.panel_inspector != null and ui.panel_inspector.visible and mouse_screen.x > (screen_size.x - 350.0):
-			return
-			
 		var mouse_world: Vector2 = get_global_mouse_position()
 		var tile_coord: Vector2i = Vector2i(int(mouse_world.x / 16.0), int(mouse_world.y / 16.0))
 		
@@ -555,14 +599,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			is_dragging_footprint = false
 			drag_start_tile = Vector2i(-1, -1)
 			if active_build_id != &"":
-				active_build_id = &""
-				active_build_footprint = Vector2i.ZERO
-				ui.set_active_build_mode(&"")
-				renderer.active_build_id = &""
-				renderer.hover_tile = Vector2i(-1, -1)
-				renderer.hover_footprint = Vector2i.ZERO
-				renderer.queue_redraw()
-				ui.show_toast("Build mode cancelled", false)
+				_cancel_build_mode()
 				return
 				
 			if not selected_units.is_empty():
