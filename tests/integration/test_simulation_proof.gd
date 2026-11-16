@@ -1,5 +1,8 @@
 extends SceneTree
 
+# quit() does not stop a running _init, so failures are counted and the exit code is decided once at the end.
+var _failed_assertions: int = 0
+
 func _init() -> void:
 	print("==================================================")
 	print("--- Running Phase 0 Simulation Proof Integration Test ---")
@@ -8,6 +11,10 @@ func _init() -> void:
 	test_route_blocked_recovery()
 	test_destination_capacity_limit_recovery()
 	print("\n==================================================")
+	if _failed_assertions > 0:
+		printerr("!! SUITE FAILED with %d assertion errors" % _failed_assertions)
+		quit(1)
+		return
 	print(">>> PHASE 0 EXIT GATE PASSED! <<<")
 	print("==================================================")
 	quit(0)
@@ -15,12 +22,12 @@ func _init() -> void:
 func assert_true(cond: bool, msg: String = "") -> void:
 	if not cond:
 		printerr("FAILED ASSERTION: ", msg)
-		quit(1)
+		_failed_assertions += 1
 
 func assert_eq(a, b, msg: String = "") -> void:
 	if a != b:
 		printerr("FAILED ASSERTION: expected %s, got %s. %s" % [str(b), str(a), msg])
-		quit(1)
+		_failed_assertions += 1
 
 func test_end_to_end_production_and_hauling() -> void:
 	print("\n[Test 1] Testing end-to-end Farm -> Hauler -> Bakery -> Hauler -> Storehouse...")

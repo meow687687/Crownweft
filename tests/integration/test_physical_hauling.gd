@@ -1,5 +1,12 @@
 extends SceneTree
 
+var _failed_assertions: int = 0
+
+func _assert(condition: bool, message: String = "") -> void:
+	if not condition:
+		printerr("Assertion failed: " + message)
+		_failed_assertions += 1
+
 func _initialize() -> void:
 	var world := WorldState.new(16, 12, 941)
 	for y in range(world.height):
@@ -25,21 +32,24 @@ func _initialize() -> void:
 	var logistics := LogisticsSystem.new()
 	var hauler = logistics.register_hauler(100, Vector2i(2, 8))
 	var job: HaulJob = logistics.check_and_create_demand(farm, bakery, &"grain", 4, 1, 1)
-	assert(job != null)
+	_assert(job != null, "Haul job should be created")
+	if job == null:
+		quit(1)
+		return
 	logistics.dispatch_jobs()
 
 	var source_before: int = farm.inventory.get_quantity(&"grain")
 	logistics.tick_haulers(inventory_map, 1, pathfinding, building_map)
-	assert(farm.inventory.get_quantity(&"grain") == source_before, "Goods must not be picked up before the hauler reaches the source")
-	assert(job.status == HaulJob.Status.ASSIGNED, "Job should remain assigned while the hauler is moving to the source")
+	_assert(farm.inventory.get_quantity(&"grain") == source_before, "Goods must not be picked up before the hauler reaches the source")
+	_assert(job.status == HaulJob.Status.ASSIGNED, "Job should remain assigned while the hauler is moving to the source")
 
 	var source_arrival_tick := 1
 	while job.status == HaulJob.Status.ASSIGNED and source_arrival_tick < 30:
 		source_arrival_tick += 1
 		logistics.tick_haulers(inventory_map, source_arrival_tick, pathfinding, building_map)
-	assert(job.status == HaulJob.Status.IN_TRANSIT, "Job should enter transit only after reaching the source")
-	assert(hauler.carried_amount == 4, "Hauler should carry the reserved amount")
-	assert(bakery.inventory.get_quantity(&"grain") == 0, "Destination should not receive goods before arrival")
+	_assert(job.status == HaulJob.Status.IN_TRANSIT, "Job should enter transit only after reaching the source")
+	_assert(hauler.carried_amount == 4, "Hauler should carry the reserved amount")
+	_assert(bakery.inventory.get_quantity(&"grain") == 0, "Destination should not receive goods before arrival")
 
 	# Simulate a temporary interruption after pickup. Recovery should reuse the
 	# existing destination reservation, not reserve more capacity on each retry.
@@ -47,15 +57,19 @@ func _initialize() -> void:
 	job.status = HaulJob.Status.BLOCKED
 	job.blocked_reason = "TEST_TEMPORARY_BLOCK"
 	logistics.tick_haulers(inventory_map, source_arrival_tick + 1, pathfinding, building_map)
-	assert(job.status == HaulJob.Status.IN_TRANSIT, "A reachable destination should resume after a temporary block")
-	assert(bakery.inventory.get_reserved_in(&"grain") == reservation_before, "Resume must not leak duplicate destination reservations")
+	_assert(job.status == HaulJob.Status.IN_TRANSIT, "A reachable destination should resume after a temporary block")
+	_assert(bakery.inventory.get_reserved_in(&"grain") == reservation_before, "Resume must not leak duplicate destination reservations")
 
 	var delivery_tick := source_arrival_tick + 1
 	while job.status == HaulJob.Status.IN_TRANSIT and delivery_tick < 60:
 		delivery_tick += 1
 		logistics.tick_haulers(inventory_map, delivery_tick, pathfinding, building_map)
-	assert(job.status == HaulJob.Status.DELIVERED, "Job should complete after walking to the destination")
-	assert(bakery.inventory.get_quantity(&"grain") == 4, "Destination should receive the actual cargo")
-	assert(hauler.carried_amount == 0, "Cargo should clear only after delivery")
+	_assert(job.status == HaulJob.Status.DELIVERED, "Job should complete after walking to the destination")
+	_assert(bakery.inventory.get_quantity(&"grain") == 4, "Destination should receive the actual cargo")
+	_assert(hauler.carried_amount == 0, "Cargo should clear only after delivery")
+	if _failed_assertions > 0:
+		printerr("!! SUITE FAILED with %d assertion errors" % _failed_assertions)
+		quit(1)
+		return
 	print("PASS: physical hauling delays pickup and delivery until path traversal completes.")
 	quit(0)

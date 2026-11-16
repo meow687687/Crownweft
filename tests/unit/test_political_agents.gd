@@ -1,5 +1,8 @@
 extends SceneTree
 
+# quit() does not stop a running _init, so failures are counted and the exit code is decided once at the end.
+var _failed_assertions: int = 0
+
 func _init() -> void:
 	print("\n--- Running TestPoliticalAgents ---")
 	test_1_faction_definitions_valid_and_unique()
@@ -16,18 +19,22 @@ func _init() -> void:
 	test_12_cooldowns_prevent_excessive_oscillation()
 	test_13_save_load_preserves_diplomacy_state()
 	test_14_legacy_save_compatibility_and_non_regression()
+	if _failed_assertions > 0:
+		printerr("!! SUITE FAILED with %d assertion errors" % _failed_assertions)
+		quit(1)
+		return
 	print("--- TestPoliticalAgents PASSED ---\n")
 	quit(0)
 
 func assert_true(cond: bool, msg: String = "") -> void:
 	if not cond:
 		printerr("Assertion failed: ", msg)
-		quit(1)
+		_failed_assertions += 1
 
 func assert_eq(a, b, msg: String = "") -> void:
 	if a != b:
 		printerr("Assertion failed: expected %s, got %s. %s" % [str(b), str(a), msg])
-		quit(1)
+		_failed_assertions += 1
 
 # Test 1: Faction definitions valid and unique
 func test_1_faction_definitions_valid_and_unique() -> void:

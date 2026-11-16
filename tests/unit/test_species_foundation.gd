@@ -1,5 +1,8 @@
 extends SceneTree
 
+# quit() does not stop a running _init, so failures are counted and the exit code is decided once at the end.
+var _failed_assertions: int = 0
+
 const CitizenState = preload("res://scripts/domain/citizen_state.gd")
 const SpeciesCatalog = preload("res://scripts/domain/species_catalog.gd")
 const BuildingState = preload("res://scripts/domain/building_state.gd")
@@ -24,18 +27,22 @@ func _init() -> void:
 	test_8_energy_and_rest_continue_to_work_for_all_species()
 	test_9_save_load_round_trip_preserves_species_and_attributes()
 	test_10_non_regression_and_workforce_data()
+	if _failed_assertions > 0:
+		printerr("!! SUITE FAILED with %d assertion errors" % _failed_assertions)
+		quit(1)
+		return
 	print("--- TestSpeciesFoundation PASSED ---\n")
 	quit(0)
 
 func assert_true(cond: bool, msg: String = "") -> void:
 	if not cond:
 		printerr("Assertion failed: ", msg)
-		quit(1)
+		_failed_assertions += 1
 
 func assert_eq(a, b, msg: String = "") -> void:
 	if a != b:
 		printerr("Assertion failed: expected %s, got %s. %s" % [str(b), str(a), msg])
-		quit(1)
+		_failed_assertions += 1
 
 func test_1_species_definitions_valid_and_unique() -> void:
 	var defs: Dictionary = SpeciesCatalog.get_all_defs()

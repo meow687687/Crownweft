@@ -1,6 +1,9 @@
 class_name TestRegionalCampaigns
 extends SceneTree
 
+# A failed assert() only aborts the current function, so failures are counted and the exit code is decided once at the end.
+var _failed_assertions: int = 0
+
 func _init() -> void:
 	print("\n--- Running TestRegionalCampaigns ---")
 	test_1_campaign_objective_lifecycle()
@@ -16,6 +19,10 @@ func _init() -> void:
 	test_11_permanent_control_transfer_via_treaty()
 	test_12_diplomatic_chronicle_and_war_records()
 	test_13_save_load_round_trip()
+	if _failed_assertions > 0:
+		printerr("!! SUITE FAILED with %d assertion errors" % _failed_assertions)
+		quit(1)
+		return
 	print("--- TestRegionalCampaigns PASSED ---\n")
 	quit(0)
 
@@ -23,7 +30,7 @@ func _assert(condition: bool, message: String) -> void:
 	if not condition:
 		push_error("Assertion failed: " + message)
 		printerr("Assertion failed: " + message)
-		assert(condition, message)
+		_failed_assertions += 1
 
 func _setup_world() -> RegionalWorldState:
 	var state := RegionalWorldState.new()

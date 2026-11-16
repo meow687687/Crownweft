@@ -1,5 +1,8 @@
 extends SceneTree
 
+# quit() does not stop a running _init, so failures are counted and the exit code is decided once at the end.
+var _failed_assertions: int = 0
+
 const CitizenState = preload("res://scripts/domain/citizen_state.gd")
 const SpeciesCatalog = preload("res://scripts/domain/species_catalog.gd")
 const SocialClassCatalog = preload("res://scripts/domain/social_class_catalog.gd")
@@ -27,18 +30,22 @@ func _init() -> void:
 	test_8_save_load_round_trip_preserves_social_status()
 	test_9_legacy_and_invalid_save_data_handling()
 	test_10_automatic_social_advancement()
+	if _failed_assertions > 0:
+		printerr("!! SUITE FAILED with %d assertion errors" % _failed_assertions)
+		quit(1)
+		return
 	print("--- TestSocialClasses PASSED ---\n")
 	quit(0)
 
 func assert_true(cond: bool, msg: String = "") -> void:
 	if not cond:
 		printerr("Assertion failed: ", msg)
-		quit(1)
+		_failed_assertions += 1
 
 func assert_eq(a, b, msg: String = "") -> void:
 	if a != b:
 		printerr("Assertion failed: expected %s, got %s. %s" % [str(b), str(a), msg])
-		quit(1)
+		_failed_assertions += 1
 
 func test_1_status_definitions_valid_and_unique() -> void:
 	var defs: Dictionary = SocialClassCatalog.get_all_defs()

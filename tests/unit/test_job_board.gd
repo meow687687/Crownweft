@@ -1,22 +1,29 @@
 extends SceneTree
 
+# quit() does not stop a running _init, so failures are counted and the exit code is decided once at the end.
+var _failed_assertions: int = 0
+
 func _init() -> void:
 	print("--- Running TestJobBoard ---")
 	test_job_lifecycle()
 	test_job_cancellation_release_once()
 	test_insufficient_stock_or_capacity()
+	if _failed_assertions > 0:
+		printerr("!! SUITE FAILED with %d assertion errors" % _failed_assertions)
+		quit(1)
+		return
 	print("--- TestJobBoard PASSED ---\n")
 	quit(0)
 
 func assert_true(cond: bool, msg: String = "") -> void:
 	if not cond:
 		printerr("Assertion failed: ", msg)
-		quit(1)
+		_failed_assertions += 1
 
 func assert_eq(a, b, msg: String = "") -> void:
 	if a != b:
 		printerr("Assertion failed: expected %s, got %s. %s" % [str(b), str(a), msg])
-		quit(1)
+		_failed_assertions += 1
 
 func test_job_lifecycle() -> void:
 	var board: JobBoard = JobBoard.new()

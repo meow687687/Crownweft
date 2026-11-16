@@ -1,5 +1,8 @@
 extends SceneTree
 
+# quit() does not stop a running _init, so failures are counted and the exit code is decided once at the end.
+var _failed_assertions: int = 0
+
 const CitizenState = preload("res://scripts/domain/citizen_state.gd")
 const BuildingState = preload("res://scripts/domain/building_state.gd")
 const BuildingCatalog = preload("res://scripts/domain/building_catalog.gd")
@@ -28,18 +31,22 @@ func _init() -> void:
 	test_10_save_load_preserves_priorities_and_auto_staffing()
 	test_11_reassignment_and_unassignment_isolation()
 	test_12_non_regression_of_existing_systems()
+	if _failed_assertions > 0:
+		printerr("!! SUITE FAILED with %d assertion errors" % _failed_assertions)
+		quit(1)
+		return
 	print("--- TestWorkforceManagement PASSED ---\n")
 	quit(0)
 
 func assert_true(cond: bool, msg: String = "") -> void:
 	if not cond:
 		printerr("Assertion failed: ", msg)
-		quit(1)
+		_failed_assertions += 1
 
 func assert_eq(a, b, msg: String = "") -> void:
 	if a != b:
 		printerr("Assertion failed: expected %s, got %s. %s" % [str(b), str(a), msg])
-		quit(1)
+		_failed_assertions += 1
 
 func test_1_workforce_counts_match_citizen_states() -> void:
 	var world := WorldScene.new()
