@@ -9,6 +9,7 @@ const BUILD_PALETTE_ORDER: Array[StringName] = [&"house", &"farm", &"woodcutter"
 signal build_selected(building_id: StringName)
 signal speed_changed(speed_multiplier: float)
 signal pause_toggle_requested()
+signal inspector_close_requested()
 signal toggle_overlay_requested()
 signal worker_assignment_changed(delta: int)
 signal building_priority_changed(delta: int)
@@ -42,6 +43,9 @@ signal incident_decision_requested(incident_id: StringName, option_id: StringNam
 const MODAL_TOP: float = 100.0
 var modal_backdrop: ColorRect = null
 var modal_panels: Array[PanelContainer] = []
+var primary_controls: Array[Button] = []
+var previous_primary_focus: Button = null
+var previous_inspector_focus_key: String = ""
 
 # Top Bar Elements
 var label_coin: Label = null
@@ -97,6 +101,8 @@ var panel_workforce: PanelContainer = null
 var label_workforce_summary: Label = null
 var btn_auto_staffing: Button = null
 var box_workforce_citizens: VBoxContainer = null
+var box_workforce_extra_filters: VBoxContainer = null
+var btn_workforce_extra_filters: Button = null
 var active_workforce_filter: StringName = &"ALL"
 var filter_buttons: Dictionary = {}
 var active_species_filter: StringName = &"all"
@@ -194,7 +200,7 @@ func _build_ui_layout() -> void:
 	top_panel.add_child(top_box)
 	# Row one: realm stock on the left, time and file controls on the right.
 	var resources_row := HBoxContainer.new()
-	resources_row.add_theme_constant_override("separation", 18)
+	resources_row.add_theme_constant_override("separation", 12)
 	top_box.add_child(resources_row)
 	var lbl_brand := Label.new()
 	lbl_brand.text = "CROWNWEFT"
@@ -231,7 +237,7 @@ func _build_ui_layout() -> void:
 
 	# Row two: settlement health on the left, realm panels on the right.
 	var status_row := HBoxContainer.new()
-	status_row.add_theme_constant_override("separation", 14)
+	status_row.add_theme_constant_override("separation", 8)
 	top_box.add_child(status_row)
 	label_population = _create_badge(status_row, "POPULATION", "10 FED", Color("#9ed7e7"))
 	label_housing = _create_badge(status_row, "HOUSING", "0/0", UITheme.COLOR_RED_ALERT)
@@ -243,8 +249,8 @@ func _build_ui_layout() -> void:
 	var ctrl_box := HBoxContainer.new()
 	ctrl_box.add_theme_constant_override("separation", 4)
 	status_row.add_child(ctrl_box)
-	btn_incidents = _create_ctrl_button(ctrl_box, "INCIDENTS (0)", func(): toggle_incident_dialog_requested.emit(), "Civic incidents awaiting your decision [I]")
-	btn_workforce = _create_ctrl_button(ctrl_box, "WORKFORCE", func(): toggle_workforce_panel_requested.emit(), "Citizens and job assignments [P]")
+	btn_incidents = _create_ctrl_button(ctrl_box, "INCIDENTS (0)", func(): toggle_incident_dialog_requested.emit(), "View active civic incidents [I]")
+	btn_workforce = _create_ctrl_button(ctrl_box, "PEOPLE", func(): toggle_workforce_panel_requested.emit(), "Workforce: citizens and job assignments [P]")
 	btn_government = _create_ctrl_button(ctrl_box, "LAWS", func(): toggle_government_panel_requested.emit(), "Government and laws [L]")
 	btn_diplomacy = _create_ctrl_button(ctrl_box, "DIPLOMACY", func(): toggle_diplomacy_panel_requested.emit(), "Neighbouring realms [F]")
 	btn_world_map = _create_ctrl_button(ctrl_box, "MAP", func(): toggle_world_map_panel_requested.emit(), "Regional world map [M]")
@@ -294,8 +300,10 @@ func _build_ui_layout() -> void:
 
 	var bottom_panel := PanelContainer.new()
 	bottom_panel.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	bottom_panel.offset_left = 8
-	bottom_panel.offset_right = -8
+	bottom_panel.anchor_left = 0.15
+	bottom_panel.anchor_right = 0.85
+	bottom_panel.offset_left = 0
+	bottom_panel.offset_right = 0
 	bottom_panel.offset_top = -134
 	bottom_panel.offset_bottom = -8
 	bottom_panel.add_theme_stylebox_override("panel", UITheme.create_panel_style(UITheme.COLOR_BG_DARK, UITheme.COLOR_BORDER_GOLD, 2, 6))
@@ -312,8 +320,10 @@ func _build_ui_layout() -> void:
 	var building_defs: Dictionary = BuildingCatalog.get_all_defs()
 	for building_id: StringName in BUILD_PALETTE_ORDER:
 		var btn := Button.new()
+		_register_primary_control(btn)
 		btn.text = _build_button_label(building_id, building_defs.get(building_id, {}))
 		btn.tooltip_text = _build_button_tooltip(building_id, building_defs.get(building_id, {}))
+		btn.tooltip_text += "\nEnter: select · Space: pause"
 		btn.custom_minimum_size = Vector2(0, 46)
 		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		btn.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -336,6 +346,7 @@ func _build_ui_layout() -> void:
 	var insp_scroll := ScrollContainer.new()
 	insp_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	insp_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	insp_scroll.follow_focus = true
 	# Content wraps to the drawer width; a sideways scrollbar only hid text.
 	insp_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	panel_inspector.add_child(insp_scroll)
@@ -354,10 +365,12 @@ func _build_ui_layout() -> void:
 	label_inspector_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	header_box.add_child(label_inspector_title)
 	var btn_close := Button.new()
+	btn_close.name = "InspectorClose"
 	btn_close.text = "X"
 	btn_close.custom_minimum_size = Vector2(28, 26)
 	UITheme.apply_button_style(btn_close)
-	btn_close.pressed.connect(func(): panel_inspector.visible = false)
+	btn_close.tooltip_text = "Close inspector [Esc]"
+	btn_close.pressed.connect(func(): inspector_close_requested.emit())
 	header_box.add_child(btn_close)
 	insp_box.add_child(HSeparator.new())
 	label_inspector_status = Label.new()
@@ -380,13 +393,17 @@ func _build_ui_layout() -> void:
 	label_priority.add_theme_font_size_override("font_size", 12)
 	box_priority.add_child(label_priority)
 	var btn_pri_minus := Button.new()
+	btn_pri_minus.name = "PriorityDecrease"
 	btn_pri_minus.text = "-"
+	btn_pri_minus.tooltip_text = "Decrease building priority"
 	btn_pri_minus.custom_minimum_size = Vector2(30, 24)
 	UITheme.apply_button_style(btn_pri_minus)
 	btn_pri_minus.pressed.connect(func(): building_priority_changed.emit(-1))
 	box_priority.add_child(btn_pri_minus)
 	var btn_pri_plus := Button.new()
+	btn_pri_plus.name = "PriorityIncrease"
 	btn_pri_plus.text = "+"
+	btn_pri_plus.tooltip_text = "Increase building priority"
 	btn_pri_plus.custom_minimum_size = Vector2(30, 24)
 	UITheme.apply_button_style(btn_pri_plus)
 	btn_pri_plus.pressed.connect(func(): building_priority_changed.emit(1))
@@ -401,13 +418,17 @@ func _build_ui_layout() -> void:
 	label_inspector_workers.add_theme_font_size_override("font_size", 12)
 	box_workers.add_child(label_inspector_workers)
 	var btn_w_minus := Button.new()
+	btn_w_minus.name = "WorkerDecrease"
 	btn_w_minus.text = "-"
+	btn_w_minus.tooltip_text = "Unassign a worker"
 	btn_w_minus.custom_minimum_size = Vector2(30, 26)
 	UITheme.apply_button_style(btn_w_minus)
 	btn_w_minus.pressed.connect(func(): worker_assignment_changed.emit(-1))
 	box_workers.add_child(btn_w_minus)
 	var btn_w_plus := Button.new()
+	btn_w_plus.name = "WorkerIncrease"
 	btn_w_plus.text = "+"
+	btn_w_plus.tooltip_text = "Assign an available worker"
 	btn_w_plus.custom_minimum_size = Vector2(30, 26)
 	UITheme.apply_button_style(btn_w_plus)
 	btn_w_plus.pressed.connect(func(): worker_assignment_changed.emit(1))
@@ -441,13 +462,16 @@ func _build_ui_layout() -> void:
 	label_recruit.text = "MILITARY RECRUITMENT"
 	label_recruit.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
 	box_recruitment.add_child(label_recruit)
+	var unit_defs: Dictionary = UnitDef.get_all_defs()
+	var spearman: UnitDef = unit_defs[&"spearman"]
+	var archer: UnitDef = unit_defs[&"archer"]
 	var btn_spearman := Button.new()
-	btn_spearman.text = "Recruit Spearman — 15 Coin"
+	btn_spearman.text = "Recruit %s — %s" % [spearman.display_name, _format_cost(spearman.recruitment_cost)]
 	UITheme.apply_button_style(btn_spearman)
 	btn_spearman.pressed.connect(func(): recruit_unit_requested.emit(&"spearman"))
 	box_recruitment.add_child(btn_spearman)
 	var btn_archer := Button.new()
-	btn_archer.text = "Recruit Archer — 20 Coin"
+	btn_archer.text = "Recruit %s — %s" % [archer.display_name, _format_cost(archer.recruitment_cost)]
 	UITheme.apply_button_style(btn_archer)
 	btn_archer.pressed.connect(func(): recruit_unit_requested.emit(&"archer"))
 	box_recruitment.add_child(btn_archer)
@@ -464,6 +488,7 @@ func _build_ui_layout() -> void:
 	_build_incident_panel()
 	for modal: PanelContainer in [panel_workforce, panel_government, panel_diplomacy, panel_world_map, panel_scenario, panel_incident]:
 		_register_modal(modal)
+	move_child(panel_toast, -1)
 
 func _build_modal_backdrop() -> void:
 	modal_backdrop = ColorRect.new()
@@ -488,11 +513,114 @@ func _register_modal(panel: PanelContainer) -> void:
 
 func _on_modal_visibility_changed(changed: PanelContainer) -> void:
 	if changed.visible:
+		var focused: Control = get_viewport().gui_get_focus_owner()
+		if focused is Button and primary_controls.has(focused):
+			previous_primary_focus = focused
+			previous_inspector_focus_key = ""
+		elif focused is Button and panel_inspector.is_ancestor_of(focused):
+			previous_primary_focus = null
+			previous_inspector_focus_key = str(focused.get_meta("modal_focus_key", focused.name))
 		for other: PanelContainer in modal_panels:
 			if other != changed and other.visible:
 				other.visible = false
 	if modal_backdrop != null:
 		modal_backdrop.visible = is_any_modal_open()
+	for pair: Array in [[panel_workforce, btn_workforce], [panel_government, btn_government], [panel_diplomacy, btn_diplomacy], [panel_world_map, btn_world_map], [panel_scenario, btn_scenarios], [panel_incident, btn_incidents]]:
+		var panel: PanelContainer = pair[0]
+		var button: Button = pair[1]
+		if panel != null and button != null:
+			UITheme.apply_button_style(button, panel.visible)
+	_set_primary_keyboard_access(not is_any_modal_open())
+	_set_inspector_keyboard_access(not is_any_modal_open())
+	if changed.visible:
+		_enable_modal_keyboard(changed)
+	elif not is_any_modal_open() and is_instance_valid(previous_primary_focus):
+		previous_primary_focus.grab_focus()
+		previous_primary_focus = null
+	elif not is_any_modal_open() and previous_inspector_focus_key != "":
+		_set_inspector_keyboard_access(true, previous_inspector_focus_key)
+		previous_inspector_focus_key = ""
+
+func _set_primary_keyboard_access(enabled: bool) -> void:
+	for button: Button in primary_controls:
+		button.set_meta("keyboard_accessible", enabled)
+		button.focus_mode = Control.FOCUS_ALL if enabled else Control.FOCUS_NONE
+
+func _set_inspector_keyboard_access(enabled: bool, restore_key: String = "") -> void:
+	if panel_inspector == null or get_viewport() == null:
+		return
+	var restore: Button = null
+	var fallback: Button = null
+	for node: Node in panel_inspector.find_children("*", "Button", true, false):
+		var button: Button = node as Button
+		if _is_pending_removal(button, panel_inspector):
+			continue
+		if not button.has_meta("modal_focus_key"):
+			button.set_meta("modal_focus_key", str(button.name))
+		button.set_meta("keyboard_accessible", enabled)
+		button.focus_mode = Control.FOCUS_ALL if enabled else Control.FOCUS_NONE
+		button.focus_neighbor_left = NodePath(".")
+		button.focus_neighbor_right = NodePath(".")
+		button.focus_neighbor_top = NodePath(".")
+		button.focus_neighbor_bottom = NodePath(".")
+		if button.name == "InspectorClose":
+			fallback = button
+		if restore_key != "" and str(button.get_meta("modal_focus_key", button.name)) == restore_key and button.is_visible_in_tree():
+			restore = button
+	if not enabled:
+		return
+	if restore != null:
+		restore.grab_focus()
+	elif restore_key != "" and fallback != null and fallback.is_visible_in_tree():
+		var current: Control = get_viewport().gui_get_focus_owner()
+		if current == null or _is_pending_removal(current, panel_inspector):
+			fallback.grab_focus()
+
+func _modal_focus_key(panel: PanelContainer) -> String:
+	if panel == null or get_viewport() == null:
+		return ""
+	var focused: Control = get_viewport().gui_get_focus_owner()
+	if focused is Button and panel.is_ancestor_of(focused):
+		return str(focused.get_meta("modal_focus_key", focused.text))
+	return ""
+
+func _is_pending_removal(node: Node, panel: Node) -> bool:
+	var current: Node = node
+	while current != null and current != panel:
+		if current.is_queued_for_deletion():
+			return true
+		current = current.get_parent()
+	return false
+
+func _enable_modal_keyboard(panel: PanelContainer, restore_key: String = "") -> void:
+	if panel == null or not panel.visible or get_viewport() == null:
+		return
+	for node: Node in panel.find_children("*", "ScrollContainer", true, false):
+		var scroll: ScrollContainer = node as ScrollContainer
+		if not _is_pending_removal(scroll, panel):
+			scroll.follow_focus = true
+	var first: Button = null
+	var restore: Button = null
+	for node: Node in panel.find_children("*", "Button", true, false):
+		var button: Button = node as Button
+		if button.disabled or _is_pending_removal(button, panel):
+			continue
+		button.set_meta("keyboard_accessible", true)
+		button.focus_mode = Control.FOCUS_ALL
+		button.focus_neighbor_left = NodePath(".")
+		button.focus_neighbor_right = NodePath(".")
+		button.focus_neighbor_top = NodePath(".")
+		button.focus_neighbor_bottom = NodePath(".")
+		if first == null and button.is_visible_in_tree():
+			first = button
+		if restore_key != "" and str(button.get_meta("modal_focus_key", button.text)) == restore_key and button.is_visible_in_tree():
+			restore = button
+	if restore != null:
+		restore.grab_focus()
+	elif first != null:
+		var current_focus: Control = get_viewport().gui_get_focus_owner()
+		if current_focus == null or _is_pending_removal(current_focus, panel):
+			first.grab_focus()
 
 func is_any_modal_open() -> bool:
 	for panel: PanelContainer in modal_panels:
@@ -566,6 +694,7 @@ func _build_guidance_panel() -> void:
 	header_row.add_child(label_guidance_stage)
 
 	btn_guidance_toggle = Button.new()
+	_register_primary_control(btn_guidance_toggle)
 	btn_guidance_toggle.text = "[-]"
 	btn_guidance_toggle.custom_minimum_size = Vector2(28, 22)
 	UITheme.apply_button_style(btn_guidance_toggle)
@@ -654,6 +783,7 @@ func _build_event_log_panel() -> void:
 	header_row.add_child(lbl_title)
 
 	btn_event_log_toggle = Button.new()
+	_register_primary_control(btn_event_log_toggle)
 	btn_event_log_toggle.text = "[-]"
 	btn_event_log_toggle.custom_minimum_size = Vector2(28, 22)
 	UITheme.apply_button_style(btn_event_log_toggle)
@@ -661,6 +791,7 @@ func _build_event_log_panel() -> void:
 		is_event_log_minimized = not is_event_log_minimized
 		box_event_log_body.visible = not is_event_log_minimized
 		btn_event_log_toggle.text = "[+]" if is_event_log_minimized else "[-]"
+		panel_event_log.offset_bottom = 0 if is_event_log_minimized else 570
 	)
 	header_row.add_child(btn_event_log_toggle)
 
@@ -742,8 +873,9 @@ func _create_badge(parent: Node, title: String, val: String, col: Color) -> Labe
 
 func _create_ctrl_button(parent: Node, text: String, on_pressed: Callable, tooltip: String = "") -> Button:
 	var btn: Button = Button.new()
+	_register_primary_control(btn)
 	btn.text = text
-	btn.tooltip_text = tooltip
+	btn.tooltip_text = tooltip + "\nEnter: activate · Space: pause"
 	btn.custom_minimum_size = Vector2(0, CTRL_BUTTON_HEIGHT)
 	btn.add_theme_font_size_override("font_size", 12)
 	UITheme.apply_button_style(btn)
@@ -751,11 +883,25 @@ func _create_ctrl_button(parent: Node, text: String, on_pressed: Callable, toolt
 	parent.add_child(btn)
 	return btn
 
+func _register_primary_control(button: Button) -> void:
+	button.set_meta("keyboard_accessible", true)
+	# Arrow keys pan the camera; Tab and Shift+Tab navigate these controls.
+	button.focus_neighbor_left = NodePath(".")
+	button.focus_neighbor_right = NodePath(".")
+	button.focus_neighbor_top = NodePath(".")
+	button.focus_neighbor_bottom = NodePath(".")
+	primary_controls.append(button)
+
 func select_speed(speed: float) -> void:
 	_on_speed_clicked(speed)
 
+func set_routes_visible(is_visible: bool) -> void:
+	if btn_overlay != null:
+		UITheme.apply_button_style(btn_overlay, is_visible)
+
 func _on_speed_clicked(speed: float) -> void:
 	speed_changed.emit(speed)
+	btn_speed_pause.text = "RESUME" if speed == 0.0 else "PAUSE"
 	if speed == 0.0:
 		_highlight_speed_button(btn_speed_pause)
 	elif speed == 1.0:
@@ -817,6 +963,7 @@ func hide_raid_warning() -> void:
 func update_resources(coin: int, bread: int, grain: int, timber: int, stone: int) -> void:
 	if label_coin != null:
 		label_coin.text = "COIN  %d" % coin
+		label_coin.tooltip_text = "Coin held across building inventories. Recruitment uses Town Hall coin."
 	if label_bread != null:
 		label_bread.text = "BREAD  %d" % bread
 	if label_grain != null:
@@ -828,31 +975,37 @@ func update_resources(coin: int, bread: int, grain: int, timber: int, stone: int
 
 func update_population(total: int, fed: int, hungry: int, at_risk: int) -> void:
 	if label_population != null:
+		label_population.tooltip_text = "%d fed · %d hungry · %d at risk" % [fed, hungry, at_risk]
 		if hungry == 0 and at_risk == 0:
-			label_population.text = "POPULATION  %d FED" % total
+			label_population.text = "POP  %d FED" % fed
 			label_population.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
 		else:
-			label_population.text = "POPULATION  %d  (%d HUNGRY, %d AT RISK)" % [total, hungry, at_risk]
+			label_population.text = "POP  %d · %d HUNGRY" % [total, hungry]
+			if at_risk > 0:
+				label_population.text += " · %d AT RISK" % at_risk
 			label_population.add_theme_color_override("font_color", UITheme.COLOR_RED_ALERT)
 
 func update_housing(housed: int, total_capacity: int, homeless: int, migration_status: String, block_reason: String = "") -> void:
 	if label_housing != null:
+		label_housing.tooltip_text = "Housed: %d / %d\nHomeless: %d\nMigration: %s" % [housed, total_capacity, homeless, migration_status.capitalize()]
+		if block_reason != "":
+			label_housing.tooltip_text += "\n" + block_reason
 		if total_capacity <= 0:
-			label_housing.text = "HOUSING  0/0  (%d HOMELESS)" % homeless
+			label_housing.text = "HOMES  0/0 · %d HOMELESS" % homeless
 			label_housing.add_theme_color_override("font_color", UITheme.COLOR_RED_ALERT)
 		elif homeless > 0:
-			label_housing.text = "HOUSING  %d/%d  (%d HOMELESS)" % [housed, total_capacity, homeless]
+			label_housing.text = "HOMES  %d/%d · %d HOMELESS" % [housed, total_capacity, homeless]
 			label_housing.add_theme_color_override("font_color", Color.ORANGE)
 		else:
 			var vacancy: int = total_capacity - housed
 			if migration_status == "attracting":
-				label_housing.text = "HOUSING  %d/%d  (+%d VACANT, ATTRACTING)" % [housed, total_capacity, vacancy]
+				label_housing.text = "HOMES  %d/%d · ATTRACTING" % [housed, total_capacity]
 				label_housing.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
 			elif migration_status == "arrived":
-				label_housing.text = "HOUSING  %d/%d  (+%d VACANT, ARRIVED)" % [housed, total_capacity, vacancy]
+				label_housing.text = "HOMES  %d/%d · ARRIVED" % [housed, total_capacity]
 				label_housing.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
 			else:
-				label_housing.text = "HOUSING  %d/%d  (+%d VACANT)" % [housed, total_capacity, vacancy]
+				label_housing.text = "HOMES  %d/%d · %d VACANT" % [housed, total_capacity, vacancy]
 				label_housing.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
 
 func update_economy(tax_name: String, approval_val: float) -> void:
@@ -879,6 +1032,7 @@ func show_building_details(building: BuildingState, def_info: Dictionary, worker
 		panel_inspector.visible = false
 		return
 		
+	var focus_key: String = _modal_focus_key(panel_inspector)
 	panel_inspector.visible = true
 	if box_workers != null:
 		box_workers.visible = true
@@ -911,6 +1065,7 @@ func show_building_details(building: BuildingState, def_info: Dictionary, worker
 			btn_un.add_theme_font_size_override("font_size", 10)
 			UITheme.apply_button_style(btn_un)
 			var c_id: int = w_info.get("id", 0)
+			btn_un.set_meta("modal_focus_key", "unassign:%d" % c_id)
 			btn_un.pressed.connect(func(): unassign_specific_worker_requested.emit(c_id))
 			row.add_child(btn_un)
 			box_assigned_workers.add_child(row)
@@ -1007,6 +1162,7 @@ func show_building_details(building: BuildingState, def_info: Dictionary, worker
 		label_inspector_inv.text = inv_text
 		if box_recruitment != null:
 			box_recruitment.visible = false
+		_set_inspector_keyboard_access(not is_any_modal_open(), focus_key)
 		return
 
 	var b_fp: Vector2i = building.get_footprint()
@@ -1030,8 +1186,20 @@ func show_building_details(building: BuildingState, def_info: Dictionary, worker
 			label_inspector_status.text = "STATUS: ACTIVE (%d/%d OCCUPIED)" % [occ_list.size(), h_cap]
 			label_inspector_status.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
 	elif building.current_block_reason == &"":
-		label_inspector_status.text = "STATUS: ACTIVE"
-		label_inspector_status.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
+		var chain: Dictionary = details.get("production_chain", {})
+		match str(chain.get("real_status", "ACTIVE")):
+			"UNSTAFFED":
+				label_inspector_status.text = "STATUS: UNSTAFFED — ASSIGN WORKERS"
+				label_inspector_status.add_theme_color_override("font_color", Color.ORANGE)
+			"WAITING_FOR_WORKERS":
+				label_inspector_status.text = "STATUS: WAITING FOR WORKERS TO ARRIVE"
+				label_inspector_status.add_theme_color_override("font_color", Color.ORANGE)
+			"PRODUCING":
+				label_inspector_status.text = "STATUS: PRODUCING"
+				label_inspector_status.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
+			_:
+				label_inspector_status.text = "STATUS: ACTIVE"
+				label_inspector_status.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
 	elif building.current_block_reason == &"ENTRANCE_UNREACHABLE":
 		label_inspector_status.text = "STATUS: BLOCKED — ENTRANCE UNREACHABLE"
 		label_inspector_status.add_theme_color_override("font_color", UITheme.COLOR_RED_ALERT)
@@ -1113,6 +1281,7 @@ func show_building_details(building: BuildingState, def_info: Dictionary, worker
 	
 	if box_recruitment != null:
 		box_recruitment.visible = (building.definition_id == &"barracks")
+	_set_inspector_keyboard_access(not is_any_modal_open(), focus_key)
 
 func show_citizen_details(citizen: CitizenState, workplace: BuildingState = null, home: BuildingState = null, government: GovernmentState = null) -> void:
 	if citizen == null:
@@ -1268,6 +1437,7 @@ func show_citizen_details(citizen: CitizenState, workplace: BuildingState = null
 		text += " • %s: %d (x%.2f)\n" % [str(s).capitalize().rpad(10), s_val, s_fac]
 
 	label_inspector_inv.text = text
+	_set_inspector_keyboard_access(not is_any_modal_open())
 
 func _build_workforce_panel() -> void:
 	panel_workforce = PanelContainer.new()
@@ -1342,9 +1512,23 @@ func _build_workforce_panel() -> void:
 		filter_bar.add_child(btn)
 		filter_buttons[s_name] = btn
 
+	btn_workforce_extra_filters = Button.new()
+	btn_workforce_extra_filters.text = "MORE FILTERS ▾"
+	btn_workforce_extra_filters.tooltip_text = "Filter by people, estate, or culture"
+	UITheme.apply_button_style(btn_workforce_extra_filters)
+	main_vbox.add_child(btn_workforce_extra_filters)
+	box_workforce_extra_filters = VBoxContainer.new()
+	box_workforce_extra_filters.add_theme_constant_override("separation", 4)
+	box_workforce_extra_filters.visible = false
+	main_vbox.add_child(box_workforce_extra_filters)
+	btn_workforce_extra_filters.pressed.connect(func():
+		box_workforce_extra_filters.visible = not box_workforce_extra_filters.visible
+		_update_extra_filter_button()
+	)
+
 	var species_filter_bar := HBoxContainer.new()
 	species_filter_bar.add_theme_constant_override("separation", 4)
-	main_vbox.add_child(species_filter_bar)
+	box_workforce_extra_filters.add_child(species_filter_bar)
 
 	var species_filters: Array[String] = ["ALL PEOPLES", "HUMAN", "STONEBORN", "GREENWARDEN"]
 	for sp_f in species_filters:
@@ -1361,7 +1545,7 @@ func _build_workforce_panel() -> void:
 
 	var status_filter_bar := HBoxContainer.new()
 	status_filter_bar.add_theme_constant_override("separation", 3)
-	main_vbox.add_child(status_filter_bar)
+	box_workforce_extra_filters.add_child(status_filter_bar)
 
 	var status_filters: Array[String] = ["ALL ESTATES", "COMMONER", "ARTISAN", "MERCHANT", "SCHOLAR", "CLERGY", "ADMIN", "NOBLE"]
 	for st_f in status_filters:
@@ -1380,7 +1564,7 @@ func _build_workforce_panel() -> void:
 
 	var culture_filter_bar := HBoxContainer.new()
 	culture_filter_bar.add_theme_constant_override("separation", 4)
-	main_vbox.add_child(culture_filter_bar)
+	box_workforce_extra_filters.add_child(culture_filter_bar)
 
 	var culture_filters: Array[String] = ["ALL CULTURES", "VALEN", "KHORVATH", "SYLVANARI"]
 	for cult_f in culture_filters:
@@ -1398,6 +1582,7 @@ func _build_workforce_panel() -> void:
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	main_vbox.add_child(scroll)
 
 	box_workforce_citizens = VBoxContainer.new()
@@ -1420,19 +1605,29 @@ func _set_species_filter(sp_key: StringName) -> void:
 	active_species_filter = sp_key
 	for k in species_filter_buttons:
 		UITheme.apply_button_style(species_filter_buttons[k], k == sp_key)
+	_update_extra_filter_button()
 	_refresh_workforce_citizen_list()
 
 func _set_status_filter(st_key: StringName) -> void:
 	active_status_filter = st_key
 	for k in status_filter_buttons:
 		UITheme.apply_button_style(status_filter_buttons[k], k == st_key)
+	_update_extra_filter_button()
 	_refresh_workforce_citizen_list()
 
 func _set_culture_filter(cult_key: StringName) -> void:
 	active_culture_filter = cult_key
 	for k in culture_filter_buttons:
 		UITheme.apply_button_style(culture_filter_buttons[k], k == cult_key)
+	_update_extra_filter_button()
 	_refresh_workforce_citizen_list()
+
+func _update_extra_filter_button() -> void:
+	if btn_workforce_extra_filters == null or box_workforce_extra_filters == null:
+		return
+	var count: int = int(active_species_filter != &"all") + int(active_status_filter != &"all") + int(active_culture_filter != &"all")
+	var suffix: String = " (%d active)" % count if count > 0 else ""
+	btn_workforce_extra_filters.text = "MORE FILTERS%s %s" % [suffix, "▴" if box_workforce_extra_filters.visible else "▾"]
 
 func toggle_workforce_panel() -> void:
 	if panel_workforce != null:
@@ -1467,6 +1662,7 @@ func update_workforce_panel(summary: Dictionary, citizens_data: Array, auto_staf
 func _refresh_workforce_citizen_list() -> void:
 	if box_workforce_citizens == null:
 		return
+	var focus_key: String = _modal_focus_key(panel_workforce)
 	for child in box_workforce_citizens.get_children():
 		child.queue_free()
 
@@ -1533,7 +1729,8 @@ func _refresh_workforce_citizen_list() -> void:
 			conflict_suffix
 		]
 		lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		lbl.add_theme_font_size_override("font_size", 11)
+		lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		lbl.add_theme_font_size_override("font_size", 12)
 		if is_blocked:
 			lbl.add_theme_color_override("font_color", UITheme.COLOR_RED_ALERT)
 		elif is_resting:
@@ -1548,10 +1745,12 @@ func _refresh_workforce_citizen_list() -> void:
 		btn_focus.add_theme_font_size_override("font_size", 10)
 		UITheme.apply_button_style(btn_focus)
 		var cid: int = c.get("id", 0)
+		btn_focus.set_meta("modal_focus_key", "citizen:%d" % cid)
 		btn_focus.pressed.connect(func(): citizen_selected_from_panel.emit(cid))
 		row.add_child(btn_focus)
 
 		box_workforce_citizens.add_child(row)
+	_enable_modal_keyboard(panel_workforce, focus_key)
 
 func _build_government_panel() -> void:
 	panel_government = PanelContainer.new()
@@ -1593,6 +1792,7 @@ func _build_government_panel() -> void:
 	label_gov_summary.text = "Treasury: 50 Coin | Approval: 60% | Administration: Unstaffed"
 	label_gov_summary.add_theme_font_size_override("font_size", 11)
 	label_gov_summary.add_theme_color_override("font_color", Color("#c8d6e5"))
+	label_gov_summary.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	main_vbox.add_child(label_gov_summary)
 
 	main_vbox.add_child(HSeparator.new())
@@ -1633,6 +1833,7 @@ func update_government_panel(gov_data: Dictionary) -> void:
 func _refresh_government_panel() -> void:
 	if box_gov_laws == null:
 		return
+	var focus_key: String = _modal_focus_key(panel_government)
 
 	var enacted: Dictionary = _last_gov_data.get("enacted_policies", {})
 	var has_admin: bool = _last_gov_data.get("has_admin", false)
@@ -1680,14 +1881,19 @@ func _refresh_government_panel() -> void:
 			var opt_btn := Button.new()
 			var is_selected: bool = (opt_key == current_opt)
 			opt_btn.text = "[ENACTED] %s" % opt_def.get("display_name") if is_selected else str(opt_def.get("display_name"))
+			opt_btn.tooltip_text = "%s\n%s" % [str(opt_def.get("description", "")), str(opt_def.get("trade_offs", ""))]
 			opt_btn.custom_minimum_size = Vector2(0, 24)
 			opt_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			opt_btn.add_theme_font_size_override("font_size", 10)
 			UITheme.apply_button_style(opt_btn, is_selected)
 			var captured_law: StringName = law_id
 			var captured_opt: StringName = opt_key
+			opt_btn.set_meta("modal_focus_key", "law:%s:%s" % [law_id, opt_key])
 			opt_btn.pressed.connect(func():
-				policy_enact_requested.emit(captured_law, captured_opt)
+				if is_selected:
+					show_toast("This policy is already enacted", false)
+				else:
+					policy_enact_requested.emit(captured_law, captured_opt)
 			)
 			btn_row.add_child(opt_btn)
 
@@ -1710,6 +1916,7 @@ func _refresh_government_panel() -> void:
 			for entry in hist:
 				h_text += "  • %s\n" % str(entry.get("description", ""))
 			label_gov_history.text = h_text.strip_edges()
+	_enable_modal_keyboard(panel_government, focus_key)
 
 func is_selected_positive(law_id: StringName, opt_id: StringName) -> bool:
 	if law_id == LawCatalog.LAW_TAXATION and opt_id == &"low":
@@ -1807,6 +2014,7 @@ func update_diplomacy_panel(dip_data: Dictionary) -> void:
 func _refresh_diplomacy_panel() -> void:
 	if list_diplomacy_factions == null or box_diplomacy_details == null:
 		return
+	var focus_key: String = _modal_focus_key(panel_diplomacy)
 
 	# Rebuild Left Faction Selector
 	for child in list_diplomacy_factions.get_children():
@@ -1822,14 +2030,10 @@ func _refresh_diplomacy_panel() -> void:
 		btn.add_theme_font_size_override("font_size", 11)
 		
 		var is_sel: bool = (f_id == selected_diplomacy_faction_id)
-		if is_sel:
-			btn.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
-			btn.add_theme_stylebox_override("normal", UITheme.create_panel_style(Color(0.2, 0.25, 0.35), UITheme.COLOR_ACCENT_GOLD, 2, 4))
-		else:
-			btn.add_theme_color_override("font_color", Color.WHITE)
-			btn.add_theme_stylebox_override("normal", UITheme.create_panel_style(Color(0.12, 0.14, 0.18), Color(0.25, 0.28, 0.32), 1, 4))
+		UITheme.apply_button_style(btn, is_sel)
 		
 		var f_key: StringName = f_id
+		btn.set_meta("modal_focus_key", "faction:%s" % f_id)
 		btn.pressed.connect(func():
 			selected_diplomacy_faction_id = f_key
 			_refresh_diplomacy_panel()
@@ -1858,6 +2062,7 @@ func _refresh_diplomacy_panel() -> void:
 	]
 	sub_lbl.add_theme_font_size_override("font_size", 10)
 	sub_lbl.add_theme_color_override("font_color", UITheme.COLOR_TEXT_MUTED)
+	sub_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box_diplomacy_details.add_child(sub_lbl)
 
 	var desc_lbl := Label.new()
@@ -1875,6 +2080,7 @@ func _refresh_diplomacy_panel() -> void:
 	goal_lbl.text = g_str.trim_suffix(" • ")
 	goal_lbl.add_theme_font_size_override("font_size", 10)
 	goal_lbl.add_theme_color_override("font_color", Color("#54a0ff"))
+	goal_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box_diplomacy_details.add_child(goal_lbl)
 
 	box_diplomacy_details.add_child(HSeparator.new())
@@ -1922,6 +2128,7 @@ func _refresh_diplomacy_panel() -> void:
 		t_lbl.text = t_text
 		t_lbl.add_theme_font_size_override("font_size", 10)
 		t_lbl.add_theme_color_override("font_color", Color("#1dd1a1") if not treaties.is_empty() else UITheme.COLOR_TEXT_MUTED)
+		t_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		box_diplomacy_details.add_child(t_lbl)
 
 		box_diplomacy_details.add_child(HSeparator.new())
@@ -1951,6 +2158,7 @@ func _refresh_diplomacy_panel() -> void:
 			no_war_lbl.text = "State of Peace. No active military conflict with this realm."
 			no_war_lbl.add_theme_font_size_override("font_size", 10)
 			no_war_lbl.add_theme_color_override("font_color", UITheme.COLOR_GREEN_OK)
+			no_war_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			war_card.add_child(no_war_lbl)
 		else:
 			var w_panel := PanelContainer.new()
@@ -2002,6 +2210,7 @@ func _refresh_diplomacy_panel() -> void:
 						str(b.get("result", "")).capitalize()
 					]
 					b_lbl.add_theme_font_size_override("font_size", 9)
+					b_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 					w_vbox.add_child(b_lbl)
 
 			# Negotiation buttons
@@ -2068,6 +2277,7 @@ func _refresh_diplomacy_panel() -> void:
 			p_name_lbl.text = str(active_prop.get("title", "Diplomatic Proposal"))
 			p_name_lbl.add_theme_font_size_override("font_size", 11)
 			p_name_lbl.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
+			p_name_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			p_vbox.add_child(p_name_lbl)
 
 			var p_reason_lbl := Label.new()
@@ -2121,6 +2331,7 @@ func _refresh_diplomacy_panel() -> void:
 			no_mem.text = "No recorded diplomatic memories involving this realm."
 			no_mem.add_theme_font_size_override("font_size", 10)
 			no_mem.add_theme_color_override("font_color", UITheme.COLOR_TEXT_MUTED)
+			no_mem.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			box_diplomacy_details.add_child(no_mem)
 		else:
 			for m in memories:
@@ -2182,6 +2393,7 @@ func _refresh_diplomacy_panel() -> void:
 		p_info.add_theme_font_size_override("font_size", 10)
 		p_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		box_diplomacy_details.add_child(p_info)
+	_enable_modal_keyboard(panel_diplomacy, focus_key)
 
 func _add_rel_stat_row(grid: GridContainer, label_text: String, val_text: String, col: Color) -> void:
 	var l := Label.new()
@@ -2292,6 +2504,7 @@ func update_world_map(map_data: Dictionary) -> void:
 func _refresh_world_map() -> void:
 	if map_node_container == null or box_region_details == null:
 		return
+	var focus_key: String = _modal_focus_key(panel_world_map)
 
 	# Clear previous interactive nodes
 	for child in map_node_container.get_children():
@@ -2310,12 +2523,12 @@ func _refresh_world_map() -> void:
 		var is_selected: bool = (reg.id == selected_region_id)
 		
 		var status_tag: String = "Controlled"
-		if reg.id == RegionCatalog.REGION_CROWNWEFT:
-			status_tag = "Crown Capital"
-		elif reg.is_contested:
-			status_tag = "Contested Pass"
+		if reg.is_contested:
+			status_tag = "Contested"
 		elif reg.occupying_faction != &"":
 			status_tag = "Occupied"
+		elif reg.id == RegionCatalog.REGION_CROWNWEFT and reg.controlling_faction == FactionCatalog.FACTION_PLAYER:
+			status_tag = "Crown Capital"
 		elif reg.controlling_faction == &"":
 			status_tag = "Unclaimed"
 		elif reg.has_settlement():
@@ -2323,7 +2536,7 @@ func _refresh_world_map() -> void:
 
 		btn.text = "%s\n[%s]" % [reg.display_name, status_tag]
 		btn.custom_minimum_size = Vector2(120, 46)
-		btn.position = Vector2(reg.map_pos.x - 60, reg.map_pos.y - 23)
+		btn.position = _map_region_position(reg) - Vector2(60, 23)
 		btn.add_theme_font_size_override("font_size", 10)
 
 		# Faction color border
@@ -2338,8 +2551,10 @@ func _refresh_world_map() -> void:
 		btn.add_theme_stylebox_override("normal", UITheme.create_panel_style(bg_col, border_col, border_w, 4))
 		btn.add_theme_stylebox_override("hover", UITheme.create_panel_style(bg_col.lightened(0.1), UITheme.COLOR_ACCENT_GOLD, border_w, 4))
 		btn.add_theme_stylebox_override("pressed", UITheme.create_panel_style(bg_col.darkened(0.1), border_col, border_w, 4))
+		btn.add_theme_stylebox_override("focus", UITheme.create_button_focus_style())
 
 		var capture_id: StringName = reg.id
+		btn.set_meta("modal_focus_key", "region:%s" % reg.id)
 		btn.pressed.connect(func():
 			selected_region_id = capture_id
 			region_selected.emit(capture_id)
@@ -2355,6 +2570,11 @@ func _refresh_world_map() -> void:
 	var selected_reg: RegionState = regions.get(selected_region_id, null)
 	if selected_reg != null:
 		_render_region_details(selected_reg)
+	_enable_modal_keyboard(panel_world_map, focus_key)
+
+func _map_region_position(reg: RegionState) -> Vector2:
+	# Keep the entire region button inside the fixed map canvas.
+	return Vector2(clampf(reg.map_pos.x, 60.0, 500.0), clampf(reg.map_pos.y, 23.0, 457.0))
 
 func _on_map_canvas_draw() -> void:
 	if map_canvas == null:
@@ -2376,8 +2596,8 @@ func _on_map_canvas_draw() -> void:
 		if reg_a == null or reg_b == null:
 			continue
 
-		var pos_a: Vector2 = reg_a.map_pos
-		var pos_b: Vector2 = reg_b.map_pos
+		var pos_a: Vector2 = _map_region_position(reg_a)
+		var pos_b: Vector2 = _map_region_position(reg_b)
 
 		var route_col: Color = Color(0.85, 0.75, 0.45, 0.75) # Default road
 		var line_w: float = 2.5
@@ -2405,7 +2625,7 @@ func _on_map_canvas_draw() -> void:
 	# Highlight selection ring
 	if regions.has(selected_region_id):
 		var sel_reg: RegionState = regions[selected_region_id]
-		map_canvas.draw_arc(sel_reg.map_pos, 32.0, 0.0, TAU, 32, UITheme.COLOR_ACCENT_GOLD, 2.5)
+		map_canvas.draw_arc(_map_region_position(sel_reg), 32.0, 0.0, TAU, 32, UITheme.COLOR_ACCENT_GOLD, 2.5)
 
 	# Draw active regional armies
 	var armies: Dictionary = _last_world_map_data.get("armies", {})
@@ -2414,7 +2634,7 @@ func _on_map_canvas_draw() -> void:
 			continue
 		var a_reg: RegionState = regions.get(a.current_region_id, null)
 		if a_reg != null:
-			var army_pos: Vector2 = a_reg.map_pos + Vector2(0, 30)
+			var army_pos: Vector2 = _map_region_position(a_reg) + Vector2(0, 30)
 			var a_col: Color = _get_faction_color(a.faction_id)
 			map_canvas.draw_circle(army_pos, 7.0, a_col)
 			map_canvas.draw_circle(army_pos, 5.0, Color.BLACK)
@@ -2427,7 +2647,7 @@ func _on_map_canvas_draw() -> void:
 			continue
 		var s_reg: RegionState = regions.get(s.current_region_id, null)
 		if s_reg != null:
-			var ship_pos: Vector2 = s_reg.map_pos + Vector2(25, 20)
+			var ship_pos: Vector2 = _map_region_position(s_reg) + Vector2(25, 20)
 			map_canvas.draw_rect(Rect2(ship_pos - Vector2(5, 5), Vector2(10, 10)), Color(0.95, 0.75, 0.25, 0.9))
 			map_canvas.draw_rect(Rect2(ship_pos - Vector2(3, 3), Vector2(6, 6)), Color(0.1, 0.1, 0.1, 0.9))
 
@@ -2658,8 +2878,10 @@ func _render_region_details(reg: RegionState) -> void:
 
 		# Player Controls
 		if a.faction_id == FactionCatalog.FACTION_PLAYER:
-			var btn_box := HBoxContainer.new()
-			btn_box.add_theme_constant_override("separation", 4)
+			var btn_box := HFlowContainer.new()
+			btn_box.add_theme_constant_override("h_separation", 4)
+			btn_box.add_theme_constant_override("v_separation", 4)
+			btn_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			card_vbox.add_child(btn_box)
 
 			var capture_aid: int = a.id
@@ -2667,8 +2889,10 @@ func _render_region_details(reg: RegionState) -> void:
 				var n_reg: RegionState = regions.get(n_id, null)
 				if n_reg != null:
 					var btn_march := Button.new()
-					btn_march.text = "To %s" % n_reg.display_name.split(" ")[0]
-					btn_march.add_theme_font_size_override("font_size", 8)
+					btn_march.text = "To %s" % n_reg.display_name
+					btn_march.tooltip_text = "Order %s to march to %s" % [a.name, n_reg.display_name]
+					btn_march.set_meta("modal_focus_key", "army:%d:march:%s" % [a.id, n_id])
+					btn_march.add_theme_font_size_override("font_size", 10)
 					UITheme.apply_button_style(btn_march)
 					var cap_nid: StringName = n_id
 					btn_march.pressed.connect(func(): army_march_requested.emit(capture_aid, cap_nid))
@@ -2676,14 +2900,18 @@ func _render_region_details(reg: RegionState) -> void:
 
 			var btn_halt := Button.new()
 			btn_halt.text = "Halt"
-			btn_halt.add_theme_font_size_override("font_size", 8)
+			btn_halt.tooltip_text = "Order %s to hold its current region" % a.name
+			btn_halt.set_meta("modal_focus_key", "army:%d:halt" % a.id)
+			btn_halt.add_theme_font_size_override("font_size", 10)
 			UITheme.apply_button_style(btn_halt)
 			btn_halt.pressed.connect(func(): army_halt_requested.emit(capture_aid))
 			btn_box.add_child(btn_halt)
 
 			var btn_resupply := Button.new()
 			btn_resupply.text = "Resupply"
-			btn_resupply.add_theme_font_size_override("font_size", 8)
+			btn_resupply.tooltip_text = "Transfer available grain to %s" % a.name
+			btn_resupply.set_meta("modal_focus_key", "army:%d:resupply" % a.id)
+			btn_resupply.add_theme_font_size_override("font_size", 10)
 			UITheme.apply_button_style(btn_resupply)
 			btn_resupply.pressed.connect(func(): army_resupply_requested.emit(capture_aid))
 			btn_box.add_child(btn_resupply)
@@ -2912,6 +3140,7 @@ func _build_scenario_panel() -> void:
 	desc.text = "Select a starting scenario. Each scenario presents distinct economic pressures, diplomatic conditions, or frontier military threats."
 	desc.add_theme_font_size_override("font_size", 10)
 	desc.add_theme_color_override("font_color", UITheme.COLOR_TEXT_MUTED)
+	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	main_vbox.add_child(desc)
 
 	main_vbox.add_child(HSeparator.new())
@@ -2933,6 +3162,14 @@ func _build_scenario_panel() -> void:
 		var card_vbox := VBoxContainer.new()
 		card_vbox.add_theme_constant_override("separation", 5)
 		card.add_child(card_vbox)
+		var details_scroll := ScrollContainer.new()
+		details_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		details_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+		card_vbox.add_child(details_scroll)
+		var details_box := VBoxContainer.new()
+		details_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		details_box.add_theme_constant_override("separation", 5)
+		details_scroll.add_child(details_box)
 
 		# Scenario Name
 		var scn_name := Label.new()
@@ -2940,7 +3177,7 @@ func _build_scenario_panel() -> void:
 		scn_name.add_theme_font_size_override("font_size", 12)
 		scn_name.add_theme_color_override("font_color", UITheme.COLOR_ACCENT_GOLD)
 		scn_name.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		card_vbox.add_child(scn_name)
+		details_box.add_child(scn_name)
 
 		# Difficulty Badge
 		var diff_label := Label.new()
@@ -2953,34 +3190,33 @@ func _build_scenario_panel() -> void:
 			diff_label.add_theme_color_override("font_color", Color(0.45, 0.85, 0.95))
 		else:
 			diff_label.add_theme_color_override("font_color", Color(0.45, 0.85, 0.45))
-		card_vbox.add_child(diff_label)
+		details_box.add_child(diff_label)
 
 		# Strategic Focus
 		var focus_lbl := Label.new()
 		focus_lbl.text = "Focus: %s" % scn_def.get("strategic_focus", "")
-		focus_lbl.add_theme_font_size_override("font_size", 9)
+		focus_lbl.add_theme_font_size_override("font_size", 11)
 		focus_lbl.add_theme_color_override("font_color", Color(0.85, 0.85, 0.85))
 		focus_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		card_vbox.add_child(focus_lbl)
+		details_box.add_child(focus_lbl)
 
 		# Narrative Description
 		var body_lbl := Label.new()
 		body_lbl.text = scn_def.get("description", "")
-		body_lbl.add_theme_font_size_override("font_size", 9)
+		body_lbl.add_theme_font_size_override("font_size", 11)
 		body_lbl.add_theme_color_override("font_color", UITheme.COLOR_TEXT_MUTED)
 		body_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		body_lbl.size_flags_vertical = Control.SIZE_EXPAND_FILL
-		card_vbox.add_child(body_lbl)
+		details_box.add_child(body_lbl)
 
 		# Constraints
 		var constraints: Array = scn_def.get("constraints", [])
 		if not constraints.is_empty():
 			var con_lbl := Label.new()
 			con_lbl.text = "Key Constraints:\n• " + "\n• ".join(constraints)
-			con_lbl.add_theme_font_size_override("font_size", 9)
+			con_lbl.add_theme_font_size_override("font_size", 11)
 			con_lbl.add_theme_color_override("font_color", Color(0.75, 0.72, 0.65))
 			con_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-			card_vbox.add_child(con_lbl)
+			details_box.add_child(con_lbl)
 
 		var btn_start := Button.new()
 		btn_start.text = "START SCENARIO"
@@ -3075,12 +3311,17 @@ func _build_incident_panel() -> void:
 	label_prompt.add_theme_color_override("font_color", UITheme.COLOR_TEXT_MUTED)
 	main_vbox.add_child(label_prompt)
 
+	var options_scroll := ScrollContainer.new()
+	options_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	options_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	main_vbox.add_child(options_scroll)
 	box_incident_options = VBoxContainer.new()
 	box_incident_options.add_theme_constant_override("separation", 6)
-	box_incident_options.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	main_vbox.add_child(box_incident_options)
+	box_incident_options.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	options_scroll.add_child(box_incident_options)
 
 func show_incident_dialog(incident_data: Dictionary, world = null) -> void:
+	var focus_key: String = _modal_focus_key(panel_incident)
 	current_viewed_incident = incident_data
 	if panel_incident == null:
 		return
@@ -3113,6 +3354,7 @@ func show_incident_dialog(incident_data: Dictionary, world = null) -> void:
 	for opt in options:
 		var opt_id: StringName = opt.get("id", &"")
 		var opt_btn := Button.new()
+		opt_btn.set_meta("modal_focus_key", "incident:%s:%s" % [inc_id, opt_id])
 		var opt_title: String = opt.get("title", str(opt_id))
 		var preview: String = opt.get("consequence_preview", "")
 		var cost_dict: Dictionary = opt.get("cost", {})
@@ -3126,15 +3368,15 @@ func show_incident_dialog(incident_data: Dictionary, world = null) -> void:
 
 		opt_btn.text = "%s%s\n  %s" % [opt_title, cost_str, preview]
 		opt_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		opt_btn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		opt_btn.custom_minimum_size = Vector2(0, 44)
 		UITheme.apply_button_style(opt_btn)
 
 		if is_decided:
+			opt_btn.disabled = true
 			if opt_id == chosen_opt_id:
 				opt_btn.text = "[ENACTED] " + opt_btn.text
-				opt_btn.add_theme_color_override("font_color", Color(0.4, 0.9, 0.4))
-			else:
-				opt_btn.disabled = true
+				opt_btn.add_theme_color_override("font_disabled_color", Color(0.4, 0.9, 0.4))
 		else:
 			var can_afford: bool = true
 			var block_reason: String = ""
@@ -3162,6 +3404,7 @@ func show_incident_dialog(incident_data: Dictionary, world = null) -> void:
 	if panel_diplomacy != null: panel_diplomacy.visible = false
 	if panel_world_map != null: panel_world_map.visible = false
 	if panel_scenario != null: panel_scenario.visible = false
+	_enable_modal_keyboard(panel_incident, focus_key)
 
 func update_incident_button(active_incidents: Array) -> void:
 	if btn_incidents == null:

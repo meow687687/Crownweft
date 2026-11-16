@@ -68,9 +68,7 @@ func _init_simulation(scenario_id: StringName = ScenarioCatalog.SCENARIO_FOUNDIN
 	buildings.clear()
 	citizens.clear()
 	military_units.clear()
-	selected_units.clear()
-	selected_building = null
-	selected_citizen = null
+	_reset_interaction_state()
 	current_tick = 0
 	next_entity_id = 1
 	sim_tick_timer = 0.0
@@ -222,6 +220,7 @@ func _init_simulation(scenario_id: StringName = ScenarioCatalog.SCENARIO_FOUNDIN
 		_update_workforce_panel()
 		ui.update_economy(economy.get_tax_level_name(), economy.approval)
 		ui.update_incident_button(incidents.get_all_active_incidents())
+		_update_ui_state(_current_needs_report())
 
 func _setup_signals() -> void:
 	if ui == null:
@@ -230,6 +229,7 @@ func _setup_signals() -> void:
 		sim_speed_multiplier = speed
 	)
 	ui.pause_toggle_requested.connect(_toggle_pause)
+	ui.inspector_close_requested.connect(_clear_selection)
 	ui.build_selected.connect(func(b_id: StringName):
 		active_build_id = b_id
 		var def_info: Dictionary = BuildingCatalog.get_all_defs().get(b_id, {})
@@ -242,6 +242,7 @@ func _setup_signals() -> void:
 	)
 	ui.toggle_overlay_requested.connect(func():
 		renderer.show_logistics_overlay = not renderer.show_logistics_overlay
+		ui.set_routes_visible(renderer.show_logistics_overlay)
 		renderer.queue_redraw()
 	)
 	ui.worker_assignment_changed.connect(_on_worker_assignment_changed)
@@ -409,7 +410,9 @@ func _cleanup_destroyed_buildings() -> void:
 			selected_building = null
 			ui.show_building_details(null, {})
 		if building.definition_id == &"town_hall":
-			sim_speed_multiplier = 0.0
+			if sim_speed_multiplier > 0.0:
+				_speed_before_pause = sim_speed_multiplier
+			_set_speed(0.0)
 			ui.show_toast("Town Hall destroyed. Realm lost.", true)
 		else:
 			ui.show_toast("%s destroyed" % str(building.definition_id).capitalize(), true)
@@ -493,6 +496,25 @@ func _cancel_build_mode() -> void:
 		ui.set_active_build_mode(&"")
 		ui.show_toast("Build mode cancelled", false)
 
+func _reset_interaction_state() -> void:
+	active_build_id = &""
+	active_build_footprint = Vector2i.ZERO
+	is_dragging_footprint = false
+	drag_start_tile = Vector2i(-1, -1)
+	selected_building = null
+	selected_citizen = null
+	selected_units.clear()
+	if renderer != null:
+		renderer.active_build_id = &""
+		renderer.hover_tile = Vector2i(-1, -1)
+		renderer.hover_footprint = Vector2i.ZERO
+		renderer.selected_building = null
+		renderer.selected_units = selected_units
+		renderer.queue_redraw()
+	if ui != null and ui.is_node_ready():
+		ui.set_active_build_mode(&"")
+		ui.show_building_details(null, {})
+
 func _clear_selection() -> void:
 	selected_building = null
 	selected_citizen = null
@@ -502,6 +524,16 @@ func _clear_selection() -> void:
 	renderer.queue_redraw()
 	if ui != null:
 		ui.show_building_details(null, {})
+
+func _input(event: InputEvent) -> void:
+	# A focused button normally consumes Space. Keep Space reserved for pause;
+	# Enter remains available to activate focused controls.
+	if event is InputEventKey and event.keycode == KEY_SPACE:
+		var focused: Control = get_viewport().gui_get_focus_owner()
+		if focused is Button and focused.get_meta("keyboard_accessible", false):
+			if event.pressed and not event.echo:
+				_toggle_pause()
+			get_viewport().set_input_as_handled()
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -1047,6 +1079,7 @@ func _on_recruit_unit_requested(unit_def_id: StringName) -> void:
 	var new_unit: MilitaryUnitState = combat.spawn_player_unit(unit_def_id, spawn_pos)
 	military_units.append(new_unit)
 	renderer.queue_redraw()
+	_update_ui_state(_current_needs_report())
 	ui.show_toast("Recruited %s" % unit_def.display_name, false)
 
 func _simulation_tick() -> void:
@@ -1706,6 +1739,18 @@ func _generate_logistics_demand() -> void:
 				if transfer > 0:
 					job_board.create_job(res_id, transfer, source_building.inventory, b.construction_inventory, 4, current_tick)
 
+func _current_needs_report() -> Dictionary:
+	var report: Dictionary = {"fed": 0, "hungry": 0, "at_risk": 0}
+	for citizen: CitizenState in citizens:
+		match citizen.food_state:
+			CitizenState.FoodState.FED:
+				report["fed"] += 1
+			CitizenState.FoodState.HUNGRY:
+				report["hungry"] += 1
+			CitizenState.FoodState.AT_RISK:
+				report["at_risk"] += 1
+	return report
+
 func _update_ui_state(needs_report: Dictionary) -> void:
 	var total_coin: int = 0
 	var total_bread: int = 0
@@ -1817,6 +1862,7 @@ func _on_proposal_response(proposal_id: int, accept: bool) -> void:
 	if res.get("ok", false):
 		var msg: String = "Diplomatic proposal accepted." if accept else "Diplomatic proposal refused."
 		if ui != null:
+			_update_ui_state(_current_needs_report())
 			ui.show_toast(msg, false)
 			_update_diplomacy_ui()
 	else:
@@ -1989,6 +2035,8 @@ func _on_army_halt_requested(army_id: int) -> void:
 	if res.get("ok", false):
 		ui.show_toast("Army holding position.", false)
 		_update_world_map_ui()
+	else:
+		ui.show_toast(res.get("reason", "Cannot halt army"), true)
 
 func _on_army_resupply_requested(army_id: int) -> void:
 	if regional_world == null:
@@ -2005,6 +2053,7 @@ func _on_army_resupply_requested(army_id: int) -> void:
 
 	if res.get("ok", false):
 		var trans: int = int(res.get("transferred", 0))
+		_update_ui_state(_current_needs_report())
 		if trans > 0:
 			ui.show_toast("Transferred %d Grain to %s." % [trans, army.name], false)
 		else:
@@ -2020,14 +2069,24 @@ func _on_toggle_scenario_panel() -> void:
 func _on_toggle_incident_dialog() -> void:
 	if ui == null or incidents == null:
 		return
+	if ui.is_incident_dialog_visible():
+		ui.toggle_incident_dialog()
+		return
 	var active: Array = incidents.get_all_active_incidents()
 	if not active.is_empty():
-		ui.show_incident_dialog(active[0], self)
+		var incident_to_show: Dictionary = active[0]
+		for incident: Dictionary in active:
+			if incident.get("chosen_option_id", &"") == &"":
+				incident_to_show = incident
+				break
+		ui.show_incident_dialog(incident_to_show, self)
 	else:
 		ui.show_toast("No active civic incidents in the realm.", false)
 
 func _on_incident_decision_requested(incident_id: StringName, option_id: StringName) -> void:
-	apply_incident_decision(incident_id, option_id)
+	var result: Dictionary = apply_incident_decision(incident_id, option_id)
+	if ui != null and not result.get("ok", false):
+		ui.show_toast(str(result.get("reason", "Unable to enact this decision")), true)
 
 func apply_incident_decision(incident_id: StringName, option_id: StringName) -> Dictionary:
 	if incidents == null:
@@ -2035,6 +2094,7 @@ func apply_incident_decision(incident_id: StringName, option_id: StringName) -> 
 	var res: Dictionary = incidents.apply_decision(incident_id, option_id, self, current_tick)
 	if res.get("ok", false):
 		if ui != null:
+			_update_ui_state(_current_needs_report())
 			ui.close_incident_dialog_if_open(incident_id)
 			ui.update_incident_button(incidents.get_all_active_incidents())
 	return res
@@ -2134,6 +2194,8 @@ func apply_loaded_state(loaded: Dictionary) -> void:
 
 	current_tick = loaded["meta"].get("current_tick", 0)
 	sim_speed_multiplier = loaded["meta"].get("sim_speed", 1.0)
+	_speed_before_pause = sim_speed_multiplier if sim_speed_multiplier > 0.0 else 1.0
+	_set_speed(sim_speed_multiplier)
 	auto_staffing_enabled = loaded["meta"].get("auto_staffing_enabled", false)
 	
 	pathfinding.initialize_from_world(world_state)
@@ -2163,8 +2225,7 @@ func apply_loaded_state(loaded: Dictionary) -> void:
 		renderer.selected_building = null
 		renderer.selected_units = selected_units
 		renderer.queue_redraw()
-	selected_building = null
-	selected_units.clear()
+	_reset_interaction_state()
 	if loaded.has("guidance") and loaded["guidance"] is Dictionary:
 		guidance.deserialize(loaded["guidance"])
 	if loaded.has("event_log") and loaded["event_log"] is Array:
@@ -2185,7 +2246,7 @@ func apply_loaded_state(loaded: Dictionary) -> void:
 		migration_block_reason = "No vacant housing available in settlement."
 		total_migrants_arrived = 0
 	var g_info: Dictionary = guidance.update_guidance(self, event_log)
-	_update_ui_state({"fed": 0, "hungry": 0, "at_risk": 0})
+	_update_ui_state(_current_needs_report())
 	if ui != null:
 		ui.update_guidance_panel(g_info)
 		ui.update_event_log(event_log.events)
@@ -2239,6 +2300,8 @@ func _on_citizen_selected_from_panel(citizen_id: int) -> void:
 	var c: CitizenState = _find_citizen_by_id(citizen_id)
 	if c == null:
 		return
+	if ui != null:
+		ui.close_all_modals()
 	selected_citizen = c
 	selected_building = null
 	selected_units.clear()
@@ -2645,9 +2708,11 @@ func get_building_diagnostic_details(building: BuildingState) -> Dictionary:
 	var max_slots: int = 3 if building.is_under_construction() else BuildingCatalog.get_worker_slots_for_footprint(building.definition_id, building.get_footprint())
 	var slot_reason: String = ""
 	if building.assigned_workers < max_slots:
-		slot_reason = "%d open slot(s) (Priority %s — waiting for unassigned citizen)" % [
+		var staffing_hint: String = "waiting for an eligible citizen" if auto_staffing_enabled else "assign a worker"
+		slot_reason = "%d open slot(s) (Priority %s — %s)" % [
 			max_slots - building.assigned_workers,
-			BuildingState.get_priority_name(building.work_priority)
+			BuildingState.get_priority_name(building.work_priority),
+			staffing_hint
 		]
 	else:
 		slot_reason = "All slots filled"

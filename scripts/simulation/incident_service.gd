@@ -124,6 +124,7 @@ func trigger_incident(id: StringName, world, current_tick: int, custom_cause: St
 		world.event_log.add_event(&"civic", chronicle_msg, &"warning", current_tick)
 
 	if world.ui != null:
+		world.ui.update_incident_button(get_all_active_incidents())
 		world.ui.show_toast("Civic Incident: %s!" % inc_data["title"], true)
 		world.ui.show_incident_dialog(inc_data, world)
 
@@ -302,6 +303,7 @@ func resolve_incident(id: StringName, world, current_tick: int) -> void:
 		world.event_log.add_event(&"civic", resolve_msg, &"info", current_tick)
 
 	if world.ui != null:
+		world.ui.update_incident_button(get_all_active_incidents())
 		world.ui.show_toast("Resolved: %s" % inc_data["title"], false)
 		world.ui.close_incident_dialog_if_open(id)
 

@@ -37,7 +37,7 @@ static func create_button_style(bg: Color = COLOR_BG_LIGHT, border: Color = COLO
 	return sb
 
 static func create_button_hover_style() -> StyleBoxFlat:
-	var sb: StyleBoxFlat = create_button_style(Color(0.25, 0.28, 0.35), COLOR_BORDER_GOLD, 5)
+	var sb: StyleBoxFlat = create_button_style(Color(0.21, 0.25, 0.19), COLOR_BORDER_GOLD, 5)
 	sb.border_color = COLOR_BORDER_GOLD
 	sb.set_border_width_all(2)
 	return sb
@@ -48,10 +48,20 @@ static func create_button_active_style() -> StyleBoxFlat:
 	sb.set_border_width_all(2)
 	return sb
 
+static func create_button_focus_style() -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color.TRANSPARENT
+	sb.border_color = Color(1.0, 1.0, 0.9)
+	sb.set_border_width_all(2)
+	return sb
+
 static func apply_button_style(btn: Button, is_active: bool = false) -> void:
 	btn.add_theme_stylebox_override("normal", create_button_active_style() if is_active else create_button_style())
 	btn.add_theme_stylebox_override("hover", create_button_hover_style())
 	btn.add_theme_stylebox_override("pressed", create_button_active_style())
+	btn.add_theme_stylebox_override("focus", create_button_focus_style())
+	btn.add_theme_stylebox_override("disabled", create_button_style(COLOR_BG_DARK, COLOR_BORDER))
 	btn.add_theme_color_override("font_color", Color(0.92, 0.92, 0.95))
 	btn.add_theme_color_override("font_hover_color", Color.WHITE)
-	btn.focus_mode = Control.FOCUS_NONE
+	btn.add_theme_color_override("font_disabled_color", COLOR_TEXT_MUTED)
+	btn.focus_mode = Control.FOCUS_ALL if btn.get_meta("keyboard_accessible", false) else Control.FOCUS_NONE
